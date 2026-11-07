@@ -42,13 +42,13 @@ The calendar retains the previously verified8Nov2026 Sunday special session as h
 
 New additive tables: `paper_charge_policies`, `paper_fill_costs`, `paper_dp_debits`, `paper_entry_cohorts`, `paper_scan_batches`, `paper_qualifier_states`, `paper_monitor_health`, `paper_eod`. All namespace-scoped rows use existing `paper_v1`; policy versions are shared immutable public configuration, not credentials. Legacy tables/column meanings are preserved. No historical fee backfill: existing unpriced fills make net metrics unavailable and pause new entries until an explicit migration decision.
 
-## Worker safety and supervision — routines MUST be saved separately
+## Worker safety and supervision — durable routines are saved separately
 
 30-second target polling,50symbols/request batches, existing1.3-second minimum between requests. Actual cadence can be longer for large batches/network/DB latency. This is **polling, not every tick**; a gap can fill a stop at the observed price, never at an invented threshold. Quote source status, same verified session, positive finite price, exchange timestamp and60-second age are checked **again for each individual fill** and mark update. Stale/unavailable quotes never create fills. Entries expire after their eligible session; exits are processed first. Auth refresh remains single-attempt with a30-minute circuit; the circuit is checked BEFORE another HTTP call. Transport failures use bounded backoff up to300seconds; auth failure pauses/exits the worker.
 
 An inherited OS file-lock lease prevents launch races/duplicate workers. Each iteration takes existing `engine.lock`, so scan/old routine commands cannot overlap a worker fill. Health and supervision deliberately bypass that command mutex, so a hung iteration cannot block its own recovery. The worker releases that lock between iterations. Heartbeats record actual PID/process-start identity and status. A stale lease-free PID is harmless: OS locks release on crash. A heartbeat over600seconds old permits supervisor to TERM **only a verified same-start, exact-path owned worker**, never arbitrary/reused PIDs; next supervision starts a replacement. Otherwise report attention needed. Worker exits when session ends. No system cron, systemd or routines are installed by this package. Host restart needs the durable supervisor to run again.
 
-Parent should replace old16:00 daily scan and bounded5-minute monitor schedules, not create duplicates. All trigger times **Asia/Calcutta (IST)**:
+Confirmed by the coordinator7Nov2026 at12:52 IST: the old scan and monitor routines were updated, and weekday EOD accounting was saved. No duplicate scheduler was installed by the engine. First future market-session execution is still unverified. All trigger times **Asia/Calcutta (IST)**:
 - Scan: `45 8 * * 1-5` → `run.sh scan --sync`.
 - Worker bootstrap/supervisor trigger group: `15,20,25,30,35,40,45,50,55 9 * * 1-5`; `*/5 10-14 * * 1-5`; `0,5,10,15,20,25,30 15 * * 1-5` → `run.sh ensure-monitor`, then `run.sh health`.
 - EOD: `10 16 * * 1-5` → `run.sh eod`, then `run.sh weekly`.

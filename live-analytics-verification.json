@@ -1,0 +1,148 @@
+{
+  "checked_IST": "2026-11-07T13:03:19.949562+05:30",
+  "preview": "http://127.0.0.1:5176",
+  "node_pid": 399074,
+  "checks": [
+    {
+      "view": "analytics",
+      "http": 200,
+      "available": true,
+      "readAt": "2026-11-07T07:33:19.961Z",
+      "seconds": 3.48,
+      "gross_paise": 0,
+      "net_paise": 0,
+      "reconciled": true,
+      "eod_records": 0,
+      "weekly_net": null,
+      "session_expected": false,
+      "heartbeat_stale": false,
+      "demo_excluded": true
+    },
+    {
+      "view": "scan",
+      "http": 200,
+      "available": true,
+      "readAt": "2026-11-07T07:33:23.426Z",
+      "seconds": 0.82,
+      "as_of_bar": "2026-11-06",
+      "counts": [
+        49,
+        19,
+        19,
+        7,
+        6,
+        7,
+        89
+      ],
+      "unique_stocks": 156,
+      "overlap_counts": {
+        "1": 118,
+        "2": 36,
+        "3": 2
+      }
+    },
+    {
+      "view": "overview",
+      "http": 200,
+      "available": true,
+      "readAt": "2026-11-07T07:33:24.248Z",
+      "seconds": 1.0,
+      "real_fills": 0,
+      "real_positions": 0,
+      "isolated_demo": 1
+    },
+    {
+      "view": "demo",
+      "http": 200,
+      "available": true,
+      "readAt": "2026-11-07T07:33:25.245Z",
+      "seconds": 0.26,
+      "rows": 1
+    },
+    {
+      "view": "analytics",
+      "http": 200,
+      "available": true,
+      "readAt": "2026-11-07T07:33:25.501Z",
+      "seconds": 2.0,
+      "gross_paise": 0,
+      "net_paise": 0,
+      "reconciled": true,
+      "eod_records": 0,
+      "weekly_net": null,
+      "session_expected": false,
+      "heartbeat_stale": false,
+      "demo_excluded": true
+    }
+  ],
+  "qualified_samples": [
+    {
+      "strategy": 2,
+      "symbol": "ALKEM-EQ",
+      "rows": 1,
+      "qualified": true,
+      "no_fixed_target": true
+    },
+    {
+      "strategy": 3,
+      "symbol": "APARINDS-EQ",
+      "rows": 1,
+      "qualified": true,
+      "no_fixed_target": true
+    },
+    {
+      "strategy": 7,
+      "symbol": "360ONE-EQ",
+      "rows": 1,
+      "qualified": true,
+      "no_fixed_target": true
+    }
+  ],
+  "html_matches_dist": true,
+  "entry_asset": "/assets/index-CEAHqt7O.js",
+  "entry_matches_dist": true,
+  "lazy_assets": [
+    {
+      "path": "/assets/LiveResults-DMJMS7Cw.js",
+      "matches_dist": true
+    },
+    {
+      "path": "/assets/LiveResults-vBBOhEcF.css",
+      "matches_dist": true
+    },
+    {
+      "path": "/assets/StrategyWorkspace-DAAArG2T.js",
+      "matches_dist": true
+    }
+  ],
+  "all_seven_previous_qualifier_http_checks": {
+    "counts": [
+      49,
+      19,
+      19,
+      7,
+      6,
+      7,
+      89
+    ],
+    "all_satisfied": true
+  },
+  "dashboard_tests_passed": 100,
+  "engine_source_tests_passed": 68,
+  "engine_installed_tests_passed": 68,
+  "lint_passed": true,
+  "build_passed": true,
+  "secret_check_failures": 0,
+  "production_dependency_vulnerabilities": 0,
+  "readonly_engine_finance_matches": {
+    "gross_total_paise": true,
+    "net_total_accrued_paise": true,
+    "net_realized_paise": true,
+    "net_unrealized_accrued_paise": true,
+    "estimated_exit_cost_paise": true,
+    "ledger_reconciled": true
+  },
+  "prepared_for_parent_visual_QA": true,
+  "parent_visual_QA_passed": true,
+  "parent_visual_QA_confirmed_IST": "2026-11-07T13:11:00+05:30"
+}

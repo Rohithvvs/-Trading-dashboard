@@ -81,7 +81,7 @@
   "ledger_reconciled": true,
   "credential_file_permission": "0o600",
   "market_session_live_execution_verified": false,
-  "scheduler_changes_saved": false,
+  "scheduler_changes_saved": true,
   "eod_closed_day_gate": "not_verified_weekday_eod; no snapshot written",
   "automatic_sunday_execution": false,
   "calendar_and_policy_valid_through": "2026-12-31",
@@ -100,5 +100,7 @@
   "runtime_libsql_version": "0.18.0",
   "runtime_source_matches_package": true,
   "fyers_market_session_probe_performed": false,
-  "new_durable_routines_saved": false
+  "new_durable_routines_saved": true,
+  "scheduling_confirmed_by_parent_IST": "2026-11-07T12:52:00+05:30",
+  "future_scheduled_session_execution_verified": false
 }

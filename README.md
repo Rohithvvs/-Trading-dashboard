@@ -155,3 +155,20 @@ No invented fixed price targets or extra hard stops. Six strategies use their pr
 ## Box-hosted paper automation source
 
 Versioned engine source, additive schema, isolated tests, fee policy and operational commands are in [`automation/paper-trading`](automation/paper-trading/README.md). Vercel serves only this dashboard/read-only API; the session worker runs separately on the bot box and needs durable supervisor/scan/EOD routines. No credentials or runtime logs are part of that package. Gross legacy fields remain gross; modeled fees/net P&L and immutable entry-overlap cohorts have explicit contracts in its README.
+
+## Automated Turso results and current scans
+
+`Live results` (`#results`) is separate from frozen historical backtesting and the paper journal. Its Overview/Strategies/Overlap/Charges/Daily & weekly tabs read actual engine ledgers; manual demo rows never enter those queries. There is no funded equity curve or fabricated EOD history. Gross/net charts require real near-close EOD observations; incomplete baselines/marks make daily and weekly changes unavailable. Historical backtests remain gross, zero-cost research dated6Nov2026.
+
+The seven-card selector now prefers the latest saved Turso completed-bar screen. Use its source switch for `Latest Turso scan` or `Saved historical research`. `#strategy=2&screen=live` shows current qualified stocks; add `&stock=ALKEM-EQ` for the real current checklist/plan. `#strategy=2&stock=ALKEM-EQ&window=1y&screen=research` preserves the frozen stock backtest. A newly qualified stock with no frozen stock-strategy file gets an honest historical-unavailable explanation, not a404 or invented trades.
+
+Additional public GET views under `/api/dashboard`:
+- `view=analytics`: bounded SQL aggregates over all real fills/costs, current marks, immutable ENTRY cohorts, policy, sanitized worker health, up to366 EOD records and verified weekly changes. Net accrued and projected exit-cost scenario are separate. Integer-paise bounds, cost/mark coverage and cashflow reconciliation are explicit.
+- `view=scan`: latest saved completed bar, all7 qualification counts and current stock→strategy sets. Current overlap is NOT retrospective entry-performance attribution.
+- `view=qualifiers&strategy=1&page=1&limit=12`: paginated qualified-only rows with fixed namespace; optional exact `symbol` or validated literal symbol search `q`. Maximum100rows/page, strategy1–7. Selected checklists/plans are read from saved engine JSON. Unknown historical membership does not block current qualification.
+
+All views are SELECT-only, parameterized, namespace-pinned and share existing90/min rate limiting, bounded20-second cache and `refresh=1` bypass. New-schema failure degrades new views without breaking legacy journal reads. Manual refresh and5-minute auto-refresh reread the new views; UI read time comes from actual server queries, never a cosmetic clock change.
+
+Server modules reuse the engine’s pure charge estimator and immutable policy via Node-supported JSON imports; no CLI, migrations, Fyers auth or broker methods are invoked by HTTP. Vercel is Node-backed read-only API/static UI only. Function tracing explicitly includes public instrument metadata, calendar and fee policy JSON. No env values or auth files are bundled. Read-only analytics may span a concurrent fill; reconciliation flags expose inconsistent coverage instead of claiming a reliable net figure.
+
+Durable routines were confirmed saved by the coordinator7Nov2026 at12:52 IST: weekday08:45 scan;9:15–15:30 five-minute supervisor;16:10 EOD. These are future scheduled tasks, NOT proof of a successful live market session. Cadence is30-second polling, not every tick; restart/scheduler jitter and31Dec2026 calendar/policy review boundaries remain documented in the engine README.
