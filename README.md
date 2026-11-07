@@ -81,3 +81,30 @@ The exporter asserts counts/mean/median against original reports, filled=closed+
 Unit/DOM fixtures are local test-only and never inserted into production. Tests cover read-only methods/namespace/parameter binding, null/zero/stale P&L, calendar/IST boundaries, closed-position exclusion, error/token redaction, rate limits, honest empty states, React rendering escaping, full table search/pagination and the real page-load/manual/five-minute/auto-off refresh flow. `scripts/smoke-live.mjs` performs a real HTTP read-only Turso roundtrip and validates every public view plus historical qualifier counts. `scripts/check-secrets.mjs` silently compares all project/build files against values in an optional authorized external env, and rejects server credential identifiers in client assets. It never prints a secret.
 
 No browser visual QA or live-market execution should be inferred from build/unit tests. Inspect desktop/mobile overview, ledger, research selector, filter audit, overlap and error/empty states before committing. Public deployment and live-session fill validation require their own checks.
+
+## Beginner redesign (default view)
+
+The default journal has five sections only: today’s status, visual open-position cards, cumulative paper P&L, recent signals, and a simple performance scorecard. Advanced tools are **off by default**, and the large historical JSON is fetched only after opting in. Calm closed-session/empty states are neutral; negative P&L is red and connection problems are amber. No missing database read is displayed as a successful zero ledger.
+
+There is **no funded starting capital**, so the requested equity curve is honestly labeled **Cumulative paper P&L**. It plots each actual snapshot’s total realized + last-known unrealized P&L (`total`), not a running sum of daily snapshots. A single real snapshot is a single point; there is no seeded cash, invented value, or example trend. Position sparklines use only accepted recorded quote audit observations. Less than two observations shows a waiting message. Position cards show strategy-rule explanations, not invented historical indicator values.
+
+Win rate uses closed paper SELL fills, with strictly positive realized P&L as wins. Average hold is the mean calendar-day difference between each SELL and its preceding BUY for the same namespace/strategy/symbol. Unmatched exits are omitted from the average, with the matched denominator shown. These metrics never use historical backtest trades.
+
+### Safe connection diagnostics
+
+Canonical server variables remain `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`; optional `PAPER_NAMESPACE` must equal `paper_v1`. Surrounding whitespace/newlines and matching accidental surrounding quotes are normalized server-side. No unsafe browser-variable alias or client token fallback is accepted. The existing local external-env loader still reads only the Turso keys.
+
+The public GET API returns safe actionable error codes, never raw exceptions or credentials:
+- `CONFIG_MISSING_URL` / `CONFIG_MISSING_TOKEN`: named server variable absent.
+- `CONFIG_URL_INVALID` / `CONFIG_NAMESPACE`: configuration shape invalid.
+- `DB_AUTH_REJECTED`: server credential rejected (replace the server token and redeploy).
+- `DB_SCHEMA_MISSING`: configured database lacks the paper schema.
+- `DATA_UNAVAILABLE`: other connectivity/service failure.
+
+Configuration is read at server runtime in the root Vercel Node function, not injected into the Vite bundle. Set variables for the correct **Production** project/environment and redeploy after changing them. A successful local connection does not prove the production environment is configured correctly. Production diagnostics/environment updates require authorized Vercel access; this code change does not itself set Vercel secrets.
+
+New bounded endpoint: `GET /api/dashboard?view=history&symbol=RELIANCE-EQ` reads up to60 accepted positive quote observations in the fixed namespace, deduplicates exchange timestamps, and returns chronological points. Symbols are validated and bound parameters; arbitrary SQL/namespaces remain forbidden. It does not contact Fyers, write data, or imply stored quotes are current.
+
+### Production verification status — 7 Nov 2026 IST
+
+Existing paper-system Turso credentials were verified through the local server: all seven public API views passed read-only database roundtrips. Production connection root cause is **not verified**. The Vercel connector could list the repository-linked project, but project details, environment metadata and runtime logs returned **403 team-scope access denied** for its owning team. No production environment variables were changed and no credential values were exposed. An authorized team member must grant the connector access to the correct project/team, then inspect the Production server variables and redeploy if configuration changes are needed. A GitHub push/redeployment alone is not proof that the production database connection is fixed.
