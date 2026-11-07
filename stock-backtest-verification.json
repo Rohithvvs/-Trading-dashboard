@@ -1,0 +1,49 @@
+{
+  "asOf": "2026-11-06",
+  "checks": [
+    {
+      "strategy": 1,
+      "qualifiers": 49,
+      "detailFiles": 49,
+      "tradeRows": 2870
+    },
+    {
+      "strategy": 2,
+      "qualifiers": 19,
+      "detailFiles": 19,
+      "tradeRows": 740
+    },
+    {
+      "strategy": 3,
+      "qualifiers": 19,
+      "detailFiles": 19,
+      "tradeRows": 653
+    },
+    {
+      "strategy": 4,
+      "qualifiers": 7,
+      "detailFiles": 7,
+      "tradeRows": 134
+    },
+    {
+      "strategy": 5,
+      "qualifiers": 6,
+      "detailFiles": 6,
+      "tradeRows": 136
+    },
+    {
+      "strategy": 6,
+      "qualifiers": 7,
+      "detailFiles": 7,
+      "tradeRows": 565
+    },
+    {
+      "strategy": 7,
+      "qualifiers": 89,
+      "detailFiles": 89,
+      "tradeRows": 8838
+    }
+  ],
+  "totalFiles": 196,
+  "catalogSha256": "6146aed56fa0be7504c27552cb43734e907d3f68ea6381290c1151b0c90400d8"
+}

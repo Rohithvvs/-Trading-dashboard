@@ -131,3 +131,23 @@ Deterministic ID `dummy_reliance_manual_v1` prevents duplicate logical trades an
 ### Refresh correctness
 
 The former in-app Refresh could return the same actual `readAt` within the API’s20-second cache window. Manual refresh, initial load and five-minute automatic refresh now request validated `refresh=1`, bypassing that cache and executing fresh Turso SELECTs. Position/history and advanced-ledger refreshes do the same. Browser fetches use `cache: no-store`; normal API requests without the flag can still use the bounded20-second cache. The existing rate limiter applies before either path. Timestamps originate in the actual reader execution, never a frontend cosmetic update. A fresh database read still does **not** obtain new broker quotes or run a strategy scan.
+
+## Strategy workspace: three screens
+
+The new default landing screen has seven strategy cards. Select one to see **only** its complete all-filters-satisfied stock list, with actual company names/industry from the exact symbol+series universe, saved reference close, historical fresh/held status, exact numeric qualification reason and an honest rule-based trade plan. Select a stock for its dedicated backtest workspace: performance, checklist and trade-plan tabs. Hash links preserve strategy/stock/window and support browser back/forward; the Paper journal remains separately accessible with live Turso reads and the isolated manual demo.
+
+- `public/data/strategy-catalog.json`: compact133KB verified catalog, snapshot **6 Nov2026 IST**; qualifier counts49/19/19/7/6/7/89. Coverage751 exact entries,692 current,52 missing,7 stale.
+- `public/data/stock-backtests/<strategy>/<symbol>.json`:196 on-demand stock-strategy files, full saved closed histories for the qualified stocks. No arbitrary trade truncation; selected trades are searchable/paginated/exportable. Large full-universe data is not fetched for this flow.
+- Rebuild deterministically with `python3 scripts/export_stock_backtests.py`. This reads existing CSVs/configs only; no strategy/data refresh, Fyers call, database write, new indicator or altered backtest rule. `stock-backtest-verification.json` reconciles every file’s trade count to prior per-stock reports and every qualifier’s complete checklist.
+
+### Performance definitions (important)
+
+1-week/1-month/1-year windows anchor to the last completed saved session,6 Nov2026, **not today’s wall clock**. Start boundaries are respectively30 Oct2026,6 Oct2026 and6 Nov2025. We include `exit_date > start` and `exit_date <= asOf`; monthly/yearly shifts clamp calendar-end dates. A trade may have entered before the window; its **whole** closed-trade return is grouped by exit date. Open trades are excluded. No observations means N/A, not zero win rate.
+
+No funded capital exists. The requested equity visualization is therefore explicitly **Realized-trade return index**, initialized to100 independently for each selected window. Sequential, non-overlapping closed trades multiply `index *= (1 + gross_return_pct/100)`; the index is stepwise only at actual exit dates. It is NOT daily mark-to-market, a paper account balance, a portfolio equity curve or a sum of overlapping stocks. Closed-index maximum drawdown is `max((runningPeak - index)/runningPeak ×100)`, including the100 baseline. It excludes intratrade drawdown and should not be confused with portfolio risk. Invalid/zero-price, nonfinite, overflow or overlapping observations make the index/DD unavailable; original closed-trade statistics remain preserved and flagged, not silently cleaned. Known corporate-action-sensitive extremes remain provisional.
+
+Charts (line, exit-month arithmetic-mean bars, win/loss/flat donut) expose actual values on hover/focus/click/tap, with accessible focus targets and persistent readouts/legend controls. Metric info controls explain definitions and examples. Exit-month bars are average **trade** returns, never monthly portfolio returns. There is no compounding across stocks or strategies. The UI is custom; no TradingView/Chartink product affiliation or external tracking embed is implied.
+
+### Trade-plan limits
+
+No invented fixed price targets or extra hard stops. Six strategies use their prescribed indicator/channel exits. Momentum alone has the prescribed10% highest-completed-close trailing stop; a90%-of-saved-close illustration is explicitly not an active order stop. Actual fills/high-water are unknown before an entry. Reference closes are frozen historical data, not live quotes. Historical next-open fills and live-paper first-fresh-observed-LTP execution are distinguished. Browsing an old fresh/held qualifier never creates a live order.

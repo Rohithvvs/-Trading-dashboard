@@ -1,0 +1,44 @@
+{
+  "origin": "http://127.0.0.1:5175",
+  "checked_IST": "2026-11-07T12:11:52.648117+05:30",
+  "assets": [
+    {
+      "path": "/assets/index-BhMa3p2m.js",
+      "bytes": 646287,
+      "matches_dist": true,
+      "workspace_code_present": false,
+      "routing_listener_present": true
+    },
+    {
+      "path": "/assets/StrategyWorkspace-DfKc5jQu.js",
+      "bytes": 24710,
+      "matches_dist": true,
+      "workspace_code_present": true,
+      "routing_listener_present": true
+    }
+  ],
+  "html_matches_dist": true,
+  "api_reads": [
+    {
+      "http": 200,
+      "error": null,
+      "readAt_IST": "2026-11-07T12:11:52.678000+05:30",
+      "real_pnl": 0,
+      "demo_count": 1
+    },
+    {
+      "http": 200,
+      "error": null,
+      "readAt_IST": "2026-11-07T12:11:53.998000+05:30",
+      "real_pnl": 0,
+      "demo_count": 1
+    },
+    {
+      "http": 200,
+      "error": null,
+      "readAt_IST": "2026-11-07T12:11:54.266000+05:30",
+      "real_pnl": 0,
+      "demo_count": 1
+    }
+  ]
+}

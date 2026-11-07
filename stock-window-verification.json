@@ -1,0 +1,116 @@
+{
+  "asOf": "2026-11-06",
+  "independentChecks": 588,
+  "status": "PASS",
+  "method": "Independent Python arithmetic from original closed_trades.csv compared to JS analyzeTrades for every qualified stock \u00d7 3 exit windows",
+  "samples": [
+    {
+      "strategy": 2,
+      "symbol": "ALKEM-EQ",
+      "period": "1w",
+      "start": "2026-10-30",
+      "count": 0,
+      "winRate": null,
+      "mean": null,
+      "median": null,
+      "index": null,
+      "maxDrawdown": null
+    },
+    {
+      "strategy": 2,
+      "symbol": "ALKEM-EQ",
+      "period": "1m",
+      "start": "2026-10-06",
+      "count": 1,
+      "winRate": 0,
+      "mean": -7.506950880444851,
+      "median": -7.506950880444851,
+      "index": 92.49304911955515,
+      "maxDrawdown": 7.5069508804448475
+    },
+    {
+      "strategy": 2,
+      "symbol": "ALKEM-EQ",
+      "period": "1y",
+      "start": "2025-11-06",
+      "count": 4,
+      "winRate": 50,
+      "mean": -2.574558411675329,
+      "median": -3.218160467097697,
+      "index": 89.67199735760461,
+      "maxDrawdown": 13.48163024234061
+    },
+    {
+      "strategy": 3,
+      "symbol": "APARINDS-EQ",
+      "period": "1w",
+      "start": "2026-10-30",
+      "count": 0,
+      "winRate": null,
+      "mean": null,
+      "median": null,
+      "index": null,
+      "maxDrawdown": null
+    },
+    {
+      "strategy": 3,
+      "symbol": "APARINDS-EQ",
+      "period": "1m",
+      "start": "2026-10-06",
+      "count": 2,
+      "winRate": 50,
+      "mean": -0.2700989461829284,
+      "median": -0.2700989461829284,
+      "index": 99.2320690209959,
+      "maxDrawdown": 5.049875311720697
+    },
+    {
+      "strategy": 3,
+      "symbol": "APARINDS-EQ",
+      "period": "1y",
+      "start": "2025-11-06",
+      "count": 5,
+      "winRate": 40,
+      "mean": -2.1919208561990766,
+      "median": -3.355068168346176,
+      "index": 88.59669197731623,
+      "maxDrawdown": 15.226327202395112
+    },
+    {
+      "strategy": 7,
+      "symbol": "360ONE-EQ",
+      "period": "1w",
+      "start": "2026-10-30",
+      "count": 0,
+      "winRate": null,
+      "mean": null,
+      "median": null,
+      "index": null,
+      "maxDrawdown": null
+    },
+    {
+      "strategy": 7,
+      "symbol": "360ONE-EQ",
+      "period": "1m",
+      "start": "2026-10-06",
+      "count": 0,
+      "winRate": null,
+      "mean": null,
+      "median": null,
+      "index": null,
+      "maxDrawdown": null
+    },
+    {
+      "strategy": 7,
+      "symbol": "360ONE-EQ",
+      "period": "1y",
+      "start": "2025-11-06",
+      "count": 11,
+      "winRate": 9.090909090909092,
+      "mean": -2.146303840689309,
+      "median": -1.8311111111111056,
+      "index": 78.6093765860929,
+      "maxDrawdown": 21.390623413907093
+    }
+  ]
+}
