@@ -1,0 +1,969 @@
+{
+  "checked_IST": "2026-11-07T14:36:17.047835+05:30",
+  "preview": "http://127.0.0.1:5180",
+  "node_pid": 22078,
+  "checks": [
+    {
+      "view": "scan",
+      "http": 200,
+      "readAt": "2026-11-07T09:06:02.977Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 1,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:05.659Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 2,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:06.438Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 3,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:07.209Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 4,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:07.983Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 5,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:08.750Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 6,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:09.518Z"
+    },
+    {
+      "view": "qualifiers",
+      "strategy": 7,
+      "limit": 100,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:10.284Z"
+    },
+    {
+      "view": "analytics",
+      "http": 200,
+      "readAt": "2026-11-07T09:06:11.347Z"
+    },
+    {
+      "view": "overview",
+      "http": 200,
+      "readAt": "2026-11-07T09:06:13.647Z"
+    },
+    {
+      "view": "demo",
+      "http": 200,
+      "readAt": "2026-11-07T09:06:14.981Z"
+    },
+    {
+      "view": "prefilter",
+      "limit": 12,
+      "http": 200,
+      "readAt": "2026-11-07T09:06:15.233Z"
+    },
+    {
+      "view": "scan",
+      "http": 200,
+      "readAt": "2026-11-07T09:06:16.015Z"
+    }
+  ],
+  "counts": [
+    4,
+    1,
+    0,
+    0,
+    0,
+    0,
+    10
+  ],
+  "QA_qualified_routes": [
+    "/#strategies",
+    "/#strategy=1&stock=ANGELONE-EQ&screen=live",
+    "/#strategy=2&stock=PAYTM-EQ&screen=live",
+    "/#strategy=7&stock=MOTILALOFS-EQ&screen=live",
+    "/#strategy=3&screen=live",
+    "/#strategy=2&stock=ALKEM-EQ&window=1y&screen=research",
+    "/#results=overlap",
+    "/#journal"
+  ],
+  "fresh_readAt_verified": true,
+  "entry_asset": "/assets/index-me3HkgRX.js",
+  "lazy_assets": [
+    "/assets/LiveResults-D2p3mRcR.js",
+    "/assets/StrategyWorkspace-Bu-AlLnt.js"
+  ],
+  "dashboard_tests": 111,
+  "engine_tests": 104,
+  "repair": {
+    "repair": {
+      "status": "complete",
+      "target": "2026-11-06",
+      "benchmark": "NSE:NIFTY50-INDEX",
+      "eligible_symbols": 692,
+      "symbols_with_missing": 553,
+      "missing_required_bars_before": 13146,
+      "requests": 553,
+      "symbols_requested": 553,
+      "provider_rows": 20722,
+      "accepted_missing_rows": 13146,
+      "rejected_rows": 0,
+      "no_provider_bar": 0,
+      "errors": [],
+      "short_history_evidence": [
+        {
+          "symbol": "EMUDHRA-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "KALAMANDIR-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "MUTHOOTMF-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "NAVNETEDUL-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "NIITMTS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "NOCIL-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "NRBBEARING-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "NUCLEUS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "ORIENTELEC-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "ORISSAMINE-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PAISALO-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PATELENG-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PDSL-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PGHH-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "POLYPLEX-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PRINCEPIPE-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "PSPPROJECT-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "RAMKY-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "RATNAMANI-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "RAYMOND-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "RESPONIND-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "ROSSARI-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SAGCEM-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SANGHVIMOV-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SANOFI-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SBCL-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SHARDAMOTR-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SHOPERSTOP-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SINDHUTRAD-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SPANDANA-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SSWL-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "STYLAMIND-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SULA-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SUNCLAY-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SUNDRMFAST-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SUNFLAG-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "SUPRAJIT-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "TARSONS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "TEAMLEASE-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "TIRUMALCHM-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "TTKPRESTIG-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "UFLEX-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "UNIPARTS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "UTKARSHBNK-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "VENKEYS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "VRLLOG-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "VSTTILLERS-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "WONDERLA-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "WSTCSTPAPR-EQ",
+          "existing_earliest": "2026-10-12",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        },
+        {
+          "symbol": "TVSSCS-EQ",
+          "existing_earliest": "2026-08-27",
+          "provider_earliest_in_requested_window": "2025-10-30",
+          "classification": "recoverable_older_history"
+        }
+      ],
+      "budget": 1100,
+      "execution_calendar_unchanged": true,
+      "writes": "INSERT OR IGNORE missing OHLC and repair checkpoints only",
+      "missing_required_bars_after": 0
+    },
+    "before": {
+      "paper_fills": 0,
+      "paper_positions": 0,
+      "paper_signals": 0,
+      "paper_watermarks": 4844
+    },
+    "after": {
+      "paper_fills": 0,
+      "paper_positions": 0,
+      "paper_signals": 0,
+      "paper_watermarks": 4844
+    }
+  },
+  "invalid_repair": {
+    "status": "complete",
+    "target": "2026-11-06",
+    "benchmark": "NSE:NIFTY50-INDEX",
+    "eligible_symbols": 692,
+    "symbols_with_missing": 2,
+    "missing_required_bars_before": 2,
+    "requests": 2,
+    "symbols_requested": 2,
+    "provider_rows": 2,
+    "accepted_missing_rows": 2,
+    "corrected_invalid_rows": 2,
+    "rejected_rows": 0,
+    "no_provider_bar": 0,
+    "errors": [],
+    "short_history_evidence": [],
+    "budget": 20,
+    "execution_calendar_unchanged": true,
+    "writes": "Missing OHLC inserts / audited invalid-only corrections and repair checkpoints; never valid-bar overwrite",
+    "missing_required_bars_after": 0
+  },
+  "repaired_screen": {
+    "before": {
+      "signals": 0,
+      "fills": 0,
+      "positions": 0,
+      "watermarks": 4844,
+      "eod": 0,
+      "raw_candles": 2383100,
+      "watermark_range": {
+        "lo": "2026-11-06",
+        "hi": "2026-11-06"
+      },
+      "demo_fills": 0
+    },
+    "after": {
+      "signals": 0,
+      "fills": 0,
+      "positions": 0,
+      "watermarks": 4844,
+      "eod": 0,
+      "raw_candles": 2383100,
+      "watermark_range": {
+        "lo": "2026-11-06",
+        "hi": "2026-11-06"
+      },
+      "demo_fills": 0
+    },
+    "report": {
+      "input_validation": {
+        "policy": {
+          "version": "verified_live_inputs_v1",
+          "retrieved_date_IST": "2026-11-07",
+          "coverage_from": "2025-10-30",
+          "coverage_through": "2026-12-31",
+          "method": "Explicit evidenced closures only, never a generic weekday or benchmark-absence filter. Raw rows and all indicator formulas unchanged; full older warmup retained.",
+          "closed_dates": {
+            "2025-11-05": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+            "2025-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+            "2026-01-15": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+            "2026-01-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-03-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-03-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-03-31": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-04-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-04-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-05-01": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-05-28": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-06-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-07-04": "https://www.nseindia.com/static/market-data/market-timings",
+            "2026-07-11": "https://www.nseindia.com/static/market-data/market-timings",
+            "2026-08-01": "https://www.nseindia.com/static/market-data/market-timings",
+            "2026-09-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-10-02": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-10-20": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-11-10": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-11-24": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+            "2026-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+          },
+          "special_sessions_preserved": {
+            "2026-02-01": "https://nsearchives.nseindia.com/content/circulars/CMTR72349.pdf",
+            "2026-11-08": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+          },
+          "weekend_evidence": {
+            "dates": [
+              "2026-07-04",
+              "2026-07-11",
+              "2026-08-01"
+            ],
+            "method": "NSE normal weekend rule, corroborated with two fresh complete official Fyers daily ranges (NSE:NIFTY50-INDEX and NSE:RELIANCE-EQ), 2026-07-01..2026-08-03: same 24 neighboring sessions, none of these three Saturdays. Not absence from benchmark alone.",
+            "endpoint": "https://myapi.fyers.in/docsv3/#tag/DataApi/paths/~1data~1history/get"
+          },
+          "limitations": "Explicit closures, not an exhaustive historical session whitelist. Unrecognized recent stock dates are unavailable for entries pending verification, not dropped. Pre-coverage full warmup remains legacy/unverified; frozen research is not rewritten."
+        },
+        "raw_rows": 2051016,
+        "live_rows": 2043227,
+        "excluded_rows": 7789,
+        "excluded_by_date": {
+          "2025-11-05": 560,
+          "2025-12-25": 560,
+          "2026-01-15": 560,
+          "2026-01-26": 560,
+          "2026-03-03": 560,
+          "2026-03-26": 560,
+          "2026-03-31": 560,
+          "2026-04-03": 560,
+          "2026-04-14": 560,
+          "2026-05-01": 560,
+          "2026-05-28": 560,
+          "2026-07-04": 557,
+          "2026-07-11": 557,
+          "2026-08-01": 515
+        },
+        "legacy_before_coverage_rows_retained": 1868151,
+        "unverified_recent_symbols": 0,
+        "raw_rows_mutated": false
+      },
+      "target_completed_bar": "2026-11-06",
+      "bootstrap": false,
+      "funnel": {
+        "1": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "close_above_prior20_high": 4
+          },
+          "sequential_pass_counts": {
+            "close_above_prior20_high": 4
+          },
+          "qualified": 4
+        },
+        "2": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "prior_red": 1,
+            "current_green": 11,
+            "close_above_supertrend": 11
+          },
+          "sequential_pass_counts": {
+            "prior_red": 1,
+            "current_green": 1,
+            "close_above_supertrend": 1
+          },
+          "qualified": 1
+        },
+        "3": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "close_above_sma200": 11,
+            "rsi14_below40": 0
+          },
+          "sequential_pass_counts": {
+            "close_above_sma200": 11,
+            "rsi14_below40": 0
+          },
+          "qualified": 0
+        },
+        "4": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "ema20_above_ema50": 10,
+            "prior_ema20_at_or_below_ema50": 1,
+            "close_above_sma200": 11
+          },
+          "sequential_pass_counts": {
+            "ema20_above_ema50": 10,
+            "prior_ema20_at_or_below_ema50": 0,
+            "close_above_sma200": 0
+          },
+          "qualified": 0
+        },
+        "5": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "close_at_or_below_lower_band": 0,
+            "close_above_sma200": 11
+          },
+          "sequential_pass_counts": {
+            "close_at_or_below_lower_band": 0,
+            "close_above_sma200": 0
+          },
+          "qualified": 0
+        },
+        "6": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "macd_above_signal": 11,
+            "prior_macd_at_or_below_signal": 0,
+            "close_above_sma50": 11
+          },
+          "sequential_pass_counts": {
+            "macd_above_signal": 11,
+            "prior_macd_at_or_below_signal": 0,
+            "close_above_sma50": 0
+          },
+          "qualified": 0
+        },
+        "7": {
+          "current_symbols": 11,
+          "individual_pass_counts": {
+            "close_above_sma200": 11,
+            "within10pct_high252": 10
+          },
+          "sequential_pass_counts": {
+            "close_above_sma200": 11,
+            "within10pct_high252": 10
+          },
+          "qualified": 10
+        }
+      },
+      "universe_symbols": 692,
+      "frozen_universe_symbols": 692,
+      "excluded_audit_symbols": 59,
+      "original_audit_universe": 751,
+      "signals_queued": 0,
+      "latest_qualifiers": 15,
+      "unavailable_current_symbols": [],
+      "invalid_rows_excluded": 0,
+      "sync": null,
+      "no_backlog_fills": true,
+      "screen_only": true,
+      "prefilter_policy": {
+        "version": "beta_momentum_v1",
+        "benchmark": "NSE:NIFTY50-INDEX",
+        "benchmark_db_symbol": "NIFTY50-INDEX",
+        "beta_intervals": 252,
+        "beta_min_pairs": 200,
+        "beta_min": 1.2,
+        "momentum_sessions": 63,
+        "momentum_min": 0.1,
+        "relative_momentum_min": 0.05,
+        "short_sessions": 20,
+        "extreme_return_limit": 0.5,
+        "volume_expansion_min": 1.2,
+        "raw_prices_unadjusted": true,
+        "proprietary_replica": false
+      },
+      "prefilter_counts": {
+        "PASS": 11,
+        "FAIL": 678,
+        "UNAVAILABLE": 3
+      },
+      "benchmark_sync_error": null,
+      "history_repair": null,
+      "data_refresh_status": "not_requested"
+    },
+    "elapsed_seconds": 348.2,
+    "actual_demo_trades": 1,
+    "qualified_by_strategy": [
+      {
+        "strategy": 1,
+        "n": 4
+      },
+      {
+        "strategy": 2,
+        "n": 1
+      },
+      {
+        "strategy": 3,
+        "n": 0
+      },
+      {
+        "strategy": 4,
+        "n": 0
+      },
+      {
+        "strategy": 5,
+        "n": 0
+      },
+      {
+        "strategy": 6,
+        "n": 0
+      },
+      {
+        "strategy": 7,
+        "n": 10
+      }
+    ],
+    "quality_review_symbols": [
+      {
+        "symbol": "ALLCARGO-EQ"
+      },
+      {
+        "symbol": "INDIAGLYCO-EQ"
+      },
+      {
+        "symbol": "TDPOWERSYS-EQ"
+      }
+    ],
+    "immutable_input_policy_count": 1,
+    "immutable_evidence_count": 1
+  },
+  "independent": {
+    "method": "Explicit matching previous/current date pairs and scalar centered sums; independent of pandas covariance",
+    "stocks_checked": 689,
+    "mismatches": [],
+    "samples": {
+      "PASS": [
+        {
+          "symbol": "ADANIPORTS-EQ",
+          "beta": 1.308766,
+          "pairs": 252,
+          "return63": 0.14253687315634211,
+          "relative63": 0.12652981032146648,
+          "reasons": []
+        },
+        {
+          "symbol": "ANGELONE-EQ",
+          "beta": 1.622376,
+          "pairs": 252,
+          "return63": 0.11410299562436887,
+          "relative63": 0.09809593278949325,
+          "reasons": []
+        },
+        {
+          "symbol": "DLF-EQ",
+          "beta": 1.579272,
+          "pairs": 252,
+          "return63": 0.1727414330218069,
+          "relative63": 0.15673437018693126,
+          "reasons": []
+        }
+      ],
+      "FAIL": [
+        {
+          "symbol": "360ONE-EQ",
+          "beta": 1.344907,
+          "pairs": 252,
+          "return63": -0.03456998313659354,
+          "relative63": -0.05057704597146917,
+          "reasons": [
+            "sma50_above_sma200",
+            "return63_at_least_10pct",
+            "relative63_at_least_5pp"
+          ]
+        },
+        {
+          "symbol": "3MINDIA-EQ",
+          "beta": 0.696446,
+          "pairs": 252,
+          "return63": -0.23416666666666663,
+          "relative63": -0.25017372950154226,
+          "reasons": [
+            "beta_at_least_1_2",
+            "close_above_sma50",
+            "sma50_above_sma200",
+            "return63_at_least_10pct",
+            "relative63_at_least_5pp",
+            "return20_positive"
+          ]
+        },
+        {
+          "symbol": "AARTIDRUGS-EQ",
+          "beta": 0.672473,
+          "pairs": 252,
+          "return63": 0.08737982231958119,
+          "relative63": 0.07137275948470556,
+          "reasons": [
+            "beta_at_least_1_2",
+            "return63_at_least_10pct"
+          ]
+        }
+      ]
+    }
+  },
+  "session_audit": {
+    "resolved": true,
+    "input_policy_version": "verified_live_inputs_v1",
+    "evidence_version": "session_evidence_20261107_v1",
+    "raw_rows_preserved": 2383100,
+    "read_universe_rows": 2051016,
+    "ignored_non_session_rows": 7789,
+    "date_classifications": {
+      "2025-11-05": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2025-12-25": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-01-15": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-01-26": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-03-03": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-03-26": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-03-31": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-04-03": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-04-14": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-05-01": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-05-28": {
+        "ignored_rows": 560,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "classification": "Official NSE cash-market trading holiday"
+      },
+      "2026-07-04": {
+        "ignored_rows": 557,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR74982.pdf",
+        "classification": "Mock-only Capital Market CAS testing, not a live daily cash session"
+      },
+      "2026-07-11": {
+        "ignored_rows": 557,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR75097.pdf",
+        "classification": "Mock-only Capital Market CAS testing, not a live daily cash session"
+      },
+      "2026-08-01": {
+        "ignored_rows": 515,
+        "source": "https://nsearchives.nseindia.com/content/circulars/CMTR75479.pdf",
+        "classification": "Mock-only Capital Market CAS testing before August3 go-live"
+      }
+    },
+    "historical_coverage_limit": "Explicit closures, not an exhaustive historical session whitelist. Unrecognized recent stock dates are unavailable for entries pending verification, not dropped. Pre-coverage full warmup remains legacy/unverified; frozen research is not rewritten."
+  },
+  "release_hold": "Publication authorized for public-site visual QA; local visual QA remains partial and GUI loopback discrepancy unresolved.",
+  "installed_engine_tests": 104,
+  "remaining_manual_review_symbols": [
+    "ALLCARGO-EQ",
+    "INDIAGLYCO-EQ",
+    "TDPOWERSYS-EQ"
+  ],
+  "actual_repaired_history_rows": 13148,
+  "checkpoint_outcomes": {
+    "FILLED": 13148
+  },
+  "no_commit_or_push": false,
+  "byte_verified_assets": [
+    {
+      "path": "/assets/index-me3HkgRX.js",
+      "sha256": "f3ce1a35dd3853e41be7e049423f003c61b747f72439f8bc118fc71629aa990d"
+    },
+    {
+      "path": "/assets/index-BXVvmtf0.css",
+      "sha256": "4261a38bede0ce0711aa48acd468de99211d81fa3134583931c4f50cd615b579"
+    },
+    {
+      "path": "/assets/StrategyWorkspace-Bu-AlLnt.js",
+      "sha256": "83d97eac05a8abf919dbec83aa03780546663f3c7abaa957f579a9ce75794383"
+    },
+    {
+      "path": "/assets/LiveResults-D2p3mRcR.js",
+      "sha256": "f6112d9b2dc8384e9f05d4cfb45d9ce84a90789bef6fb3d1bc6c1eb4368f6e3d"
+    }
+  ],
+  "preview_boot": "Current diagnostic launcherPID22078 healthy and logging request categories without secrets. Parent Chrome reload14:40:46 and14:40:55 IST refused and produced no Chrome request records; shell HTTP200. No proxy/firewall/browser settings altered. Local GUI discrepancy unresolved.",
+  "verification": {
+    "actual_secret_values_checked": 9,
+    "secret_failures": 0,
+    "lint": "PASS",
+    "build": "PASS",
+    "production_dependency_vulnerabilities": 0,
+    "git_diff_check": "PASS"
+  },
+  "current_qualifier_overlap": {
+    "unique": 10,
+    "memberships": 15,
+    "single": 5,
+    "exactly_2": 5,
+    "exactly_3": 0
+  },
+  "real_ledger": {
+    "signals": 0,
+    "fills": 0,
+    "positions": 0,
+    "eod": 0,
+    "demo_separate": 1,
+    "watermarks": 4844,
+    "watermark_bar": "2026-11-06"
+  },
+  "market_session_unproven": true,
+  "exact_snapshot_guard_verified": true,
+  "react_review": "PASS: stable primitive fetch dependencies, aborted obsolete requests, bounded lazy audit reads, stable keyed lists; existing lazy workspaces preserved.",
+  "display_fix": {
+    "actual_SSWL_beta": 1.1995215626470972,
+    "display_beta": "1.199522",
+    "condition_label": "Beta \u2265 1.2",
+    "status": "FAIL",
+    "only_failure": "beta_at_least_1_2",
+    "unchanged_gate": true,
+    "copy": "Literal six-condition labels; six-decimal beta/return strength; per-condition actual/threshold tooltips; unknown reason punctuation retained."
+  },
+  "preview_log": "/workspace/preview-5180.log",
+  "survives_box_restart": false,
+  "detached_preview_verified_after_shell_return": true,
+  "SIGHUP_survival_test": "PASS",
+  "local_visual_QA": "Partial parent PASS: funnel689evaluable/11PASS, counts4/1/0/0/0/0/10, ANGELONE both stages and optional volume. SSWL display fixed and regression-tested; full resumed visual QA awaits public deployment.",
+  "publication_authorized": true,
+  "public_deployment_verification": "Pending this release push; do not infer success from local tests.",
+  "routine_intent": "Parent confirmed morning routine wording includes prefilter/input safeguards;08:45 weekday timing unchanged."
+}

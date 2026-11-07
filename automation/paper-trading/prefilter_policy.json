@@ -1,0 +1,1 @@
+{"version":"beta_momentum_v1","benchmark":"NSE:NIFTY50-INDEX","benchmark_db_symbol":"NIFTY50-INDEX","beta_intervals":252,"beta_min_pairs":200,"beta_min":1.2,"momentum_sessions":63,"momentum_min":0.10,"relative_momentum_min":0.05,"short_sessions":20,"extreme_return_limit":0.5,"volume_expansion_min":1.2,"raw_prices_unadjusted":true,"proprietary_replica":false}

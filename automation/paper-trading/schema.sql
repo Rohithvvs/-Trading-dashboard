@@ -21,3 +21,16 @@ CREATE TABLE IF NOT EXISTS paper_monitor_health(namespace TEXT PRIMARY KEY,pid I
 CREATE TABLE IF NOT EXISTS paper_eod(namespace TEXT NOT NULL,day TEXT NOT NULL,as_of TEXT NOT NULL,report_json TEXT NOT NULL,PRIMARY KEY(namespace,day));
 CREATE INDEX IF NOT EXISTS paper_cost_day_idx ON paper_fill_costs(namespace,day);
 CREATE INDEX IF NOT EXISTS paper_qualified_bar_idx ON paper_qualifier_states(namespace,bar_date,qualified,symbol);
+
+-- Versioned two-layer entry gate (additive, separate from demo tables).
+CREATE TABLE IF NOT EXISTS paper_prefilter_policies(version TEXT PRIMARY KEY,policy_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS paper_prefilter_states(namespace TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,status TEXT NOT NULL,metrics_json TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(namespace,bar_date,symbol,policy_version));
+CREATE TABLE IF NOT EXISTS paper_entry_gate_proofs(namespace TEXT NOT NULL,signal_id TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,PRIMARY KEY(namespace,signal_id));
+
+
+CREATE TABLE IF NOT EXISTS paper_history_gap_checks(namespace TEXT NOT NULL,symbol TEXT NOT NULL,trade_date TEXT NOT NULL,checked_at TEXT NOT NULL,outcome TEXT NOT NULL,retry_after TEXT NOT NULL,details_json TEXT NOT NULL,PRIMARY KEY(namespace,symbol,trade_date));
+
+-- Additive immutable live-input provenance. Raw OHLCV is never deleted.
+CREATE TABLE IF NOT EXISTS paper_input_policies(version TEXT PRIMARY KEY,policy_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS paper_input_evidence(version TEXT PRIMARY KEY,policy_version TEXT NOT NULL,evidence_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS paper_entry_input_proofs(namespace TEXT NOT NULL,signal_id TEXT NOT NULL,policy_version TEXT NOT NULL,bar_date TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(namespace,signal_id));

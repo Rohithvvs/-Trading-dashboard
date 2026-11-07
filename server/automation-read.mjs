@@ -1,3 +1,6 @@
+import inputEvidence from '../automation/paper-trading/session_input_evidence.json' with {type:'json'};
+import inputPolicy from '../automation/paper-trading/session_input_policy.json' with {type:'json'};
+import gatePolicy from '../automation/paper-trading/prefilter_policy.json' with {type:'json'};
 // Server-only SELECT analytics. No CLI execution, migrations or broker access.
 import instruments from './instruments.json' with {type:'json'};
 import calendar from '../automation/paper-trading/config.json' with {type:'json'};
@@ -23,16 +26,26 @@ export function weeklySummary(eods,day,calendar,now=new Date(day+'T23:59:00+05:3
 
 export async function readAutomation(o,select,now){
  const readAt=now.toISOString(),base={readAt,namespace:NS,available:true};
- if(o.view==='scan'||o.view==='qualifiers'){
-  const latest=(await select('SELECT bar_date,scanned_at,status FROM paper_scan_batches WHERE namespace=? ORDER BY bar_date DESC LIMIT 1',[NS]))[0];
+ if(o.view==='scan'||o.view==='qualifiers'||o.view==='prefilter'){
+  const latest=(await select(`SELECT bar_date,scanned_at,status,json_extract(report_json,'$.input_validation') AS input_validation_json FROM paper_scan_batches WHERE namespace=? ORDER BY bar_date DESC LIMIT 1`,[NS]))[0];
   if(!latest)return {...base,available:false,code:'NO_SCAN',message:'No completed-bar scan has been saved yet.'};
-  if(o.view==='scan'){
-   const counts=await select('SELECT strategy,COUNT(*) AS screened,SUM(qualified) AS qualified FROM paper_qualifier_states WHERE namespace=? AND bar_date=? GROUP BY strategy ORDER BY strategy LIMIT 7',[NS,latest.bar_date]);
-   const overlap=await select('SELECT symbol,GROUP_CONCAT(strategy) AS strategies FROM paper_qualifier_states WHERE namespace=? AND bar_date=? AND qualified=1 GROUP BY symbol ORDER BY symbol LIMIT 751',[NS,latest.bar_date]);
-   const stocks=overlap.map(x=>({symbol:x.symbol,name:instruments[x.symbol]?.name??x.symbol,strategies:String(x.strategies).split(',').map(Number).sort((a,b)=>a-b)}));
-   return {...base,...latest,counts,stocks,excludedAudit:59,originalUniverse:751};
+  const inputValidation=parse(latest.input_validation_json);delete latest.input_validation_json;
+  if(o.view==='prefilter'){
+   const args=[NS,latest.bar_date,gatePolicy.version];let where='namespace=? AND bar_date=? AND policy_version=?';
+   if(o.q){where+=' AND instr(symbol,?)>0';args.push(o.q.toUpperCase());}
+   const total=(await select(`SELECT COUNT(*) total FROM paper_prefilter_states WHERE ${where}`,args))[0].total;
+   const rows=await select(`SELECT symbol,status,metrics_json FROM paper_prefilter_states WHERE ${where} ORDER BY CASE status WHEN 'PASS' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END,json_extract(metrics_json,'$.relative63') DESC,symbol LIMIT ? OFFSET ?`,[...args,o.limit,(o.page-1)*o.limit]);
+   return {...base,...latest,policy:gatePolicy,total,page:o.page,limit:o.limit,rows:rows.map(r=>({symbol:r.symbol,name:instruments[r.symbol]?.name??r.symbol,status:r.status,metrics:parse(r.metrics_json)}))};
   }
-  const args=[NS,latest.bar_date,o.strategy],like=o.q?`%${o.q.toUpperCase().replace(/[_%\\]/g,'\\$&')}%`:null;let where='namespace=? AND bar_date=? AND strategy=? AND qualified=1';
+  if(o.view==='scan'){
+   const counts=await select(`SELECT strategy,COUNT(*) AS screened,SUM(CASE WHEN qualified=1 AND EXISTS(SELECT 1 FROM paper_prefilter_states pg WHERE pg.namespace=paper_qualifier_states.namespace AND pg.bar_date=paper_qualifier_states.bar_date AND pg.symbol=paper_qualifier_states.symbol AND pg.status='PASS' AND pg.observed_at=paper_qualifier_states.scanned_at AND pg.policy_version='beta_momentum_v1') AND json_extract(checklist_json,'$.input_policy.version')='${inputPolicy.version}' THEN 1 ELSE 0 END) AS qualified FROM paper_qualifier_states WHERE namespace=? AND bar_date=? GROUP BY strategy ORDER BY strategy LIMIT 7`,[NS,latest.bar_date]);
+   const overlap=await select(`SELECT symbol,GROUP_CONCAT(strategy) AS strategies FROM paper_qualifier_states WHERE namespace=? AND bar_date=? AND qualified=1 AND EXISTS(SELECT 1 FROM paper_prefilter_states pg WHERE pg.namespace=paper_qualifier_states.namespace AND pg.bar_date=paper_qualifier_states.bar_date AND pg.symbol=paper_qualifier_states.symbol AND pg.status='PASS' AND pg.observed_at=paper_qualifier_states.scanned_at AND pg.policy_version='beta_momentum_v1') AND json_extract(checklist_json,'$.input_policy.version')='${inputPolicy.version}' GROUP BY symbol ORDER BY symbol LIMIT 751`,[NS,latest.bar_date]);
+   const stocks=overlap.map(x=>({symbol:x.symbol,name:instruments[x.symbol]?.name??x.symbol,strategies:String(x.strategies).split(',').map(Number).sort((a,b)=>a-b)}));
+   let prefilter;
+   try{const r=(await select(`SELECT COUNT(*) total,SUM(status='PASS') passed,SUM(status='FAIL') failed,SUM(status='UNAVAILABLE') unavailable,SUM(status IN ('PASS','FAIL')) data_usable,SUM(json_extract(metrics_json,'$.checks.beta_at_least_1_2')=1) beta_pass FROM paper_prefilter_states WHERE namespace=? AND bar_date=? AND policy_version=?`,[NS,latest.bar_date,gatePolicy.version]))[0];prefilter={...r,policy:gatePolicy,ready:Number(r.total)===751&&inputValidation?.policy?.version===inputPolicy.version};}catch{prefilter={ready:false,policy:gatePolicy};}
+   return {...base,...latest,counts:prefilter.ready?counts:counts.map(r=>({...r,qualified:0})),stocks:prefilter.ready?stocks:[],prefilter,inputValidation,inputEvidence,excludedAudit:59,originalUniverse:751};
+  }
+  const args=[NS,latest.bar_date,o.strategy],like=o.q?`%${o.q.toUpperCase().replace(/[_%\\]/g,'\\$&')}%`:null;let where=`namespace=? AND bar_date=? AND strategy=? AND qualified=1 AND EXISTS(SELECT 1 FROM paper_prefilter_states pg WHERE pg.namespace=paper_qualifier_states.namespace AND pg.bar_date=paper_qualifier_states.bar_date AND pg.symbol=paper_qualifier_states.symbol AND pg.status='PASS' AND pg.observed_at=paper_qualifier_states.scanned_at AND pg.policy_version='beta_momentum_v1') AND json_extract(checklist_json,'$.input_policy.version')='${inputPolicy.version}'`;
   if(o.symbol){where+=' AND symbol=?';args.push(o.symbol);}if(like){where+=" AND symbol LIKE ? ESCAPE '\\'";args.push(like);}
   const count=(await select(`SELECT COUNT(*) total FROM paper_qualifier_states WHERE ${where}`,args))[0];
   const rows=await select(`SELECT strategy,symbol,bar_date,checklist_json,plan_json FROM paper_qualifier_states WHERE ${where} ORDER BY symbol LIMIT ? OFFSET ?`,[...args,o.limit,(o.page-1)*o.limit]);

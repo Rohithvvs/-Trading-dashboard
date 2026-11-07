@@ -1,0 +1,283 @@
+{
+  "scope": "Existing stock rows preserved; NOT deleted or rewritten",
+  "benchmark_required_sessions": 253,
+  "stocks_complete_on_required_sessions": 692,
+  "stocks_with_extra_nonbenchmark_dates": 560,
+  "extra_rows": 7789,
+  "dates": {
+    "2025-11-05": 560,
+    "2025-12-25": 560,
+    "2026-01-15": 560,
+    "2026-01-26": 560,
+    "2026-03-03": 560,
+    "2026-03-26": 560,
+    "2026-03-31": 560,
+    "2026-04-03": 560,
+    "2026-04-14": 560,
+    "2026-05-01": 560,
+    "2026-05-28": 560,
+    "2026-07-04": 557,
+    "2026-07-11": 557,
+    "2026-08-01": 515
+  },
+  "source_evidence": [
+    "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "https://nsearchives.nseindia.com/content/circulars/CMTR72349.pdf"
+  ],
+  "example": "RELIANCE Jan15 row from historical_candles duplicates Jan14; actual official benchmark has no Jan15 session. Jan26 is an official NSE holiday.",
+  "action_taken": "Applied immutable explicit-evidence live-input filter, preserving all raw rows, full older warmup, original seven formulas and frozen research. All14 suspect dates proved holiday or mock-only from official NSE circulars; no closure inferred only from a missing benchmark day.",
+  "requires_parent_data_review_before_publication": true,
+  "session_input_policy": {
+    "version": "verified_live_inputs_v1",
+    "retrieved_date_IST": "2026-11-07",
+    "coverage_from": "2025-10-30",
+    "coverage_through": "2026-12-31",
+    "method": "Explicit evidenced closures only, never a generic weekday or benchmark-absence filter. Raw rows and all indicator formulas unchanged; full older warmup retained.",
+    "closed_dates": {
+      "2025-11-05": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+      "2025-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+      "2026-01-15": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+      "2026-01-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-31": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-04-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-04-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-05-01": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-05-28": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-06-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-07-04": "https://www.nseindia.com/static/market-data/market-timings",
+      "2026-07-11": "https://www.nseindia.com/static/market-data/market-timings",
+      "2026-08-01": "https://www.nseindia.com/static/market-data/market-timings",
+      "2026-09-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-10-02": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-10-20": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-11-10": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-11-24": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+    },
+    "special_sessions_preserved": {
+      "2026-02-01": "https://nsearchives.nseindia.com/content/circulars/CMTR72349.pdf",
+      "2026-11-08": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+    },
+    "weekend_evidence": {
+      "dates": [
+        "2026-07-04",
+        "2026-07-11",
+        "2026-08-01"
+      ],
+      "method": "NSE normal weekend rule, corroborated with two fresh complete official Fyers daily ranges (NSE:NIFTY50-INDEX and NSE:RELIANCE-EQ), 2026-07-01..2026-08-03: same 24 neighboring sessions, none of these three Saturdays. Not absence from benchmark alone.",
+      "endpoint": "https://myapi.fyers.in/docsv3/#tag/DataApi/paths/~1data~1history/get"
+    },
+    "limitations": "Explicit closures, not an exhaustive historical session whitelist. Unrecognized recent stock dates are unavailable for entries pending verification, not dropped. Pre-coverage full warmup remains legacy/unverified; frozen research is not rewritten."
+  },
+  "official_date_evidence": {
+    "version": "session_evidence_20261107_v1",
+    "policy_version": "verified_live_inputs_v1",
+    "retrieved_date_IST": "2026-11-07",
+    "sources": {
+      "2025-11-05": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+      "2025-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+      "2026-01-15": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+      "2026-01-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-03-31": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-04-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-04-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-05-01": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-05-28": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-06-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-07-04": "https://nsearchives.nseindia.com/content/circulars/CMTR74982.pdf",
+      "2026-07-11": "https://nsearchives.nseindia.com/content/circulars/CMTR75097.pdf",
+      "2026-08-01": "https://nsearchives.nseindia.com/content/circulars/CMTR75479.pdf",
+      "2026-09-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-10-02": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-10-20": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-11-10": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-11-24": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+      "2026-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+    },
+    "classification": {
+      "2026-07-04": "Mock-only Capital Market CAS testing, not a live daily cash session",
+      "2026-07-11": "Mock-only Capital Market CAS testing, not a live daily cash session",
+      "2026-08-01": "Mock-only Capital Market CAS testing before August3 go-live"
+    },
+    "fyers_corroboration": [
+      {
+        "symbol": "NSE:NIFTY50-INDEX",
+        "from": "2026-07-01",
+        "through": "2026-08-03",
+        "returned_sessions": [
+          "2026-07-01",
+          "2026-07-02",
+          "2026-07-03",
+          "2026-07-06",
+          "2026-07-07",
+          "2026-07-08",
+          "2026-07-09",
+          "2026-07-10",
+          "2026-07-13",
+          "2026-07-14",
+          "2026-07-15",
+          "2026-07-16",
+          "2026-07-17",
+          "2026-07-20",
+          "2026-07-21",
+          "2026-07-22",
+          "2026-07-23",
+          "2026-07-24",
+          "2026-07-27",
+          "2026-07-28",
+          "2026-07-29",
+          "2026-07-30",
+          "2026-07-31",
+          "2026-08-03"
+        ],
+        "suspect_dates_absent": true
+      },
+      {
+        "symbol": "NSE:RELIANCE-EQ",
+        "from": "2026-07-01",
+        "through": "2026-08-03",
+        "returned_sessions": [
+          "2026-07-01",
+          "2026-07-02",
+          "2026-07-03",
+          "2026-07-06",
+          "2026-07-07",
+          "2026-07-08",
+          "2026-07-09",
+          "2026-07-10",
+          "2026-07-13",
+          "2026-07-14",
+          "2026-07-15",
+          "2026-07-16",
+          "2026-07-17",
+          "2026-07-20",
+          "2026-07-21",
+          "2026-07-22",
+          "2026-07-23",
+          "2026-07-24",
+          "2026-07-27",
+          "2026-07-28",
+          "2026-07-29",
+          "2026-07-30",
+          "2026-07-31",
+          "2026-08-03"
+        ],
+        "suspect_dates_absent": true
+      }
+    ]
+  },
+  "actual_live_audit": {
+    "policy": {
+      "version": "verified_live_inputs_v1",
+      "retrieved_date_IST": "2026-11-07",
+      "coverage_from": "2025-10-30",
+      "coverage_through": "2026-12-31",
+      "method": "Explicit evidenced closures only, never a generic weekday or benchmark-absence filter. Raw rows and all indicator formulas unchanged; full older warmup retained.",
+      "closed_dates": {
+        "2025-11-05": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+        "2025-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+        "2026-01-15": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+        "2026-01-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-03-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-03-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-03-31": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-04-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-04-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-05-01": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-05-28": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-06-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-07-04": "https://www.nseindia.com/static/market-data/market-timings",
+        "2026-07-11": "https://www.nseindia.com/static/market-data/market-timings",
+        "2026-08-01": "https://www.nseindia.com/static/market-data/market-timings",
+        "2026-09-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-10-02": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-10-20": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-11-10": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-11-24": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+        "2026-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+      },
+      "special_sessions_preserved": {
+        "2026-02-01": "https://nsearchives.nseindia.com/content/circulars/CMTR72349.pdf",
+        "2026-11-08": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+      },
+      "weekend_evidence": {
+        "dates": [
+          "2026-07-04",
+          "2026-07-11",
+          "2026-08-01"
+        ],
+        "method": "NSE normal weekend rule, corroborated with two fresh complete official Fyers daily ranges (NSE:NIFTY50-INDEX and NSE:RELIANCE-EQ), 2026-07-01..2026-08-03: same 24 neighboring sessions, none of these three Saturdays. Not absence from benchmark alone.",
+        "endpoint": "https://myapi.fyers.in/docsv3/#tag/DataApi/paths/~1data~1history/get"
+      },
+      "limitations": "Explicit closures, not an exhaustive historical session whitelist. Unrecognized recent stock dates are unavailable for entries pending verification, not dropped. Pre-coverage full warmup remains legacy/unverified; frozen research is not rewritten."
+    },
+    "raw_rows": 2051016,
+    "live_rows": 2043227,
+    "excluded_rows": 7789,
+    "excluded_by_date": {
+      "2025-11-05": 560,
+      "2025-12-25": 560,
+      "2026-01-15": 560,
+      "2026-01-26": 560,
+      "2026-03-03": 560,
+      "2026-03-26": 560,
+      "2026-03-31": 560,
+      "2026-04-03": 560,
+      "2026-04-14": 560,
+      "2026-05-01": 560,
+      "2026-05-28": 560,
+      "2026-07-04": 557,
+      "2026-07-11": 557,
+      "2026-08-01": 515
+    },
+    "legacy_before_coverage_rows_retained": 1868151,
+    "unverified_recent_symbols": 0,
+    "raw_rows_mutated": false
+  },
+  "baseline_before": {
+    "signals": 0,
+    "fills": 0,
+    "positions": 0,
+    "watermarks": 4844,
+    "eod": 0,
+    "raw_candles": 2383100,
+    "watermark_range": {
+      "lo": "2026-11-06",
+      "hi": "2026-11-06"
+    },
+    "demo_fills": 0
+  },
+  "baseline_after": {
+    "signals": 0,
+    "fills": 0,
+    "positions": 0,
+    "watermarks": 4844,
+    "eod": 0,
+    "raw_candles": 2383100,
+    "watermark_range": {
+      "lo": "2026-11-06",
+      "hi": "2026-11-06"
+    },
+    "demo_fills": 0
+  },
+  "demo_actual": 1,
+  "current_strategy_counts": [
+    4,
+    1,
+    0,
+    0,
+    0,
+    0,
+    10
+  ],
+  "no_orders_or_watermark_changes": true,
+  "tests": {
+    "engine_source": 104,
+    "engine_installed": 104,
+    "dashboard": 108
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "version": "verified_live_inputs_v1",
+  "retrieved_date_IST": "2026-11-07",
+  "coverage_from": "2025-10-30",
+  "coverage_through": "2026-12-31",
+  "method": "Explicit evidenced closures only, never a generic weekday or benchmark-absence filter. Raw rows and all indicator formulas unchanged; full older warmup retained.",
+  "closed_dates": {
+    "2025-11-05": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+    "2025-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR65587.pdf",
+    "2026-01-15": "https://nsearchives.nseindia.com/content/circulars/CMTR72260.pdf",
+    "2026-01-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-03-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-03-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-03-31": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-04-03": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-04-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-05-01": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-05-28": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-06-26": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-07-04": "https://www.nseindia.com/static/market-data/market-timings",
+    "2026-07-11": "https://www.nseindia.com/static/market-data/market-timings",
+    "2026-08-01": "https://www.nseindia.com/static/market-data/market-timings",
+    "2026-09-14": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-10-02": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-10-20": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-11-10": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-11-24": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+    "2026-12-25": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+  },
+  "special_sessions_preserved": {
+    "2026-02-01": "https://nsearchives.nseindia.com/content/circulars/CMTR72349.pdf",
+    "2026-11-08": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf"
+  },
+  "weekend_evidence": {
+    "dates": [
+      "2026-07-04",
+      "2026-07-11",
+      "2026-08-01"
+    ],
+    "method": "NSE normal weekend rule, corroborated with two fresh complete official Fyers daily ranges (NSE:NIFTY50-INDEX and NSE:RELIANCE-EQ), 2026-07-01..2026-08-03: same 24 neighboring sessions, none of these three Saturdays. Not absence from benchmark alone.",
+    "endpoint": "https://myapi.fyers.in/docsv3/#tag/DataApi/paths/~1data~1history/get"
+  },
+  "limitations": "Explicit closures, not an exhaustive historical session whitelist. Unrecognized recent stock dates are unavailable for entries pending verification, not dropped. Pre-coverage full warmup remains legacy/unverified; frozen research is not rewritten."
+}

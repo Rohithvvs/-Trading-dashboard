@@ -12,7 +12,9 @@ class PaperTests(unittest.TestCase):
  def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T
  def signal(self,side='BUY',symbol='RELIANCE-EQ',strategy=1,eligible='2026-11-09'):
   s={'id':uuid.uuid4().hex,'strategy':strategy,'symbol':symbol,'side':side,'bar_date':'2026-11-08','eligible_date':eligible,'reason':'fixture'}
-  self.db.batch([('INSERT INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',(e.NS,s['id'],strategy,symbol,s['bar_date'],side,'pending','fixture',T.isoformat(),eligible))]);return s
+  self.db.batch([('INSERT INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',(e.NS,s['id'],strategy,symbol,s['bar_date'],side,'pending','fixture',T.isoformat(),eligible))])
+  if side=='BUY':self.db.batch([('INSERT OR REPLACE INTO paper_entry_input_proofs VALUES(?,?,?,?,?)',(e.NS,s['id'],e.si.POLICY['version'],s['bar_date'],T.isoformat())),('INSERT OR REPLACE INTO paper_prefilter_states VALUES(?,?,?,?,?,?,?)',(e.NS,s['bar_date'],symbol,e.pf.POLICY['version'],'PASS','{}',T.isoformat())),('INSERT OR REPLACE INTO paper_entry_gate_proofs VALUES(?,?,?,?,?)',(e.NS,s['id'],s['bar_date'],symbol,e.pf.POLICY['version'])),('INSERT OR IGNORE INTO paper_qualifier_states VALUES(?,?,?,?,?,?,?,?)',(e.NS,s['bar_date'],strategy,symbol,1,e.js({'input_policy':{'version':e.si.POLICY['version']}}),'{}',T.isoformat()))])
+  return s
  def quote(self,p=100,age=0):return {'symbol':'RELIANCE-EQ','price':p,'quote_at':(T-timedelta(seconds=age)).isoformat()}
  def test_buy_duplicate_exit_and_pnl(self):
   s=self.signal();self.assertTrue(e.fill(self.db,s,self.quote(),T)['filled']);self.assertFalse(e.fill(self.db,s,self.quote(),T)['filled'])
@@ -65,7 +67,8 @@ class PaperTests(unittest.TestCase):
  def test_stale_marks_labeled(self):
   e.fill(self.db,self.signal(),self.quote(),T);self.db.batch([('UPDATE paper_positions SET mark_at=? WHERE namespace=?',((T-timedelta(hours=1)).isoformat(),e.NS))]);self.assertFalse(e.pnl(self.db)['valuation_is_live'])
  def test_daily_scanner_bootstrap_queue_duplicate_and_fill(self):
-  old_u=e.universe;old_read=e.read_history;old_indicator=e.indicator
+  old_u=e.universe;old_read=e.read_history;old_indicator=e.indicator;old_eval=e.pf.evaluate;old_benchmark=e.pf.benchmark
+  e.pf.evaluate=lambda *args:{"status":"PASS"};e.pf.benchmark=lambda *args:None
   def history(day):
    import pandas as pd
    dates=pd.bdate_range(end=day,periods=260).strftime('%Y-%m-%d');f=pd.DataFrame({'symbol':'RELIANCE-EQ','trade_date':dates,'open':100.,'high':101.,'low':99.,'close':100.,'volume':1})
@@ -82,7 +85,7 @@ class PaperTests(unittest.TestCase):
    class Feed:
     def quotes(_,symbols):return {'RELIANCE-EQ':self.quote()}
    r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],7);self.assertEqual(e.monitor(self.db,Feed())['fills'],0);self.assertEqual(len(self.db.positions()),7)
-  finally:e.universe=old_u;e.read_history=old_read;e.indicator=old_indicator;e.now=lambda:T
+  finally:e.universe=old_u;e.read_history=old_read;e.indicator=old_indicator;e.pf.evaluate=old_eval;e.pf.benchmark=old_benchmark;e.now=lambda:T
  def test_provider_error_rejected(self):
   q=self.quote();q['provider_status']='error';self.assertFalse(e.fill(self.db,self.signal(),q,T)['filled'])
  def test_quote_must_not_predate_signal_bar(self):

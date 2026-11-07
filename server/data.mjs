@@ -17,18 +17,18 @@ export function positionView(row,now=Date.now()){
  const valid=mark!==null&&mark>0;
  return {...row,qty,entry_price:entry,mark_price:valid?mark:null,mark_age_seconds:age,mark_stale:!valid||age===null||age>60||age< -5,unrealized_pnl:valid&&qty!==null&&entry!==null?(mark-entry)*qty:null};
 }
-export function publicRows(rows){return rows.map(row=>{const r={...row};if('reason' in r){const known=['daily_entry','observed_LTP_below_close_highwater_stop','market_closed_or_unverified','provider_quote_error','nonpositive_or_missing_price','missing_exchange_timestamp','stale_or_future_quote','quote_outside_verified_session','fresh'];r.reason=known.includes(r.reason)?r.reason:/^daily_exit:\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{8,40}$/.test(r.reason)?r.reason:'recorded_event';}if('status' in r&&!['pending','filled','ignored_state','ignored_stale_position','expired','closed','ok','failed','success','noop'].includes(r.status))r.status='recorded';if('kind' in r&&!['monitor','scan','bootstrap','probe','init','pnl','status'].includes(r.kind))r.kind='engine_run';if('source' in r)r.source=r.source==='FYERS_QUOTES'?'FYERS_QUOTES':'market_data';return r;});}
+export function publicRows(rows){return rows.map(row=>{const r={...row};if('reason' in r){const known=['daily_entry:beta_momentum_v1','blocked_prefilter_missing_active_pass','daily_entry','observed_LTP_below_close_highwater_stop','market_closed_or_unverified','provider_quote_error','nonpositive_or_missing_price','missing_exchange_timestamp','stale_or_future_quote','quote_outside_verified_session','fresh'];r.reason=known.includes(r.reason)?r.reason:/^daily_exit:\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{8,40}$/.test(r.reason)?r.reason:'recorded_event';}if('status' in r&&!['blocked_prefilter','pending','filled','ignored_state','ignored_stale_position','expired','closed','ok','failed','success','noop'].includes(r.status))r.status='recorded';if('kind' in r&&!['monitor','scan','bootstrap','probe','init','pnl','status'].includes(r.kind))r.kind='engine_run';if('source' in r)r.source=r.source==='FYERS_QUOTES'?'FYERS_QUOTES':'market_data';return r;});}
 export function parseOptions(query={}){
- const view=query.view??'overview';if(!['overview','fills','positions','signals','runs','quotes','history','demo','analytics','scan','qualifiers'].includes(view))throw new Error('BAD_REQUEST');
+ const view=query.view??'overview';if(!['overview','fills','positions','signals','runs','quotes','history','demo','analytics','scan','qualifiers','prefilter'].includes(view))throw new Error('BAD_REQUEST');
  const integer=(v,def,max)=>{const n=v===undefined?def:Number(v);if(!Number.isInteger(n)||n<1||n>max)throw new Error('BAD_REQUEST');return n;};
  const page=integer(query.page,1,10000),limit=integer(query.limit,25,100);
  const strategy=query.strategy===undefined||query.strategy===''?null:integer(query.strategy,1,7);
  const scope=query.scope??'all';if(!['all','today'].includes(scope))throw new Error('BAD_REQUEST');
  const symbol=query.symbol;if(view==='history'||view==='qualifiers'&&symbol!==undefined){if(typeof symbol!=='string'||!/^\b[A-Z0-9&_.-]{1,80}$/.test(symbol)||view==='history'&&strategy!==null)throw new Error('BAD_REQUEST');}else if(symbol!==undefined)throw new Error('BAD_REQUEST');
  const refresh=query.refresh;if(refresh!==undefined&&refresh!=='1')throw new Error('BAD_REQUEST');
- if(['scan','analytics','qualifiers'].includes(view)&&scope!=='all'||['scan','analytics'].includes(view)&&strategy!==null)throw new Error('BAD_REQUEST');
+ if(['scan','analytics','qualifiers'].includes(view)&&scope!=='all'||['scan','analytics','prefilter'].includes(view)&&strategy!==null)throw new Error('BAD_REQUEST');
  if(view==='qualifiers'&&strategy===null)throw new Error('BAD_REQUEST');
- const q=query.q;if(q!==undefined&&(view!=='qualifiers'||typeof q!=='string'||q.length>60||!/^[A-Za-z0-9&_. -]*$/.test(q)))throw new Error('BAD_REQUEST');
+ const q=query.q;if(q!==undefined&&(!['qualifiers','prefilter'].includes(view)||typeof q!=='string'||q.length>60||!/^[A-Za-z0-9&_. -]*$/.test(q)))throw new Error('BAD_REQUEST');
  const allowed=new Set(['q','view','page','limit','strategy','scope','symbol','refresh']);if(Object.keys(query).some(k=>!allowed.has(k)))throw new Error('BAD_REQUEST');
  return {view,page,limit,strategy,scope,...(q?{q}:{}),...(symbol?{symbol}:{}),...(refresh==='1'?{forceRefresh:true}:{})};
 }
@@ -55,7 +55,7 @@ export async function readDashboard(options,execute,now=new Date()){
  const run=execute??(async(sql,args)=>(await getClient().execute({sql,args})).rows);
  const select=(sql,args=[])=>{if(!/^SELECT\s/i.test(sql))throw new Error('READ_ONLY_GUARD');return run(sql,args);};
  const day=istDay(now),ns=[NAMESPACE];
- if(['analytics','scan','qualifiers'].includes(options.view)){try{return await readAutomation({...options,day},select,now);}catch(error){const e=publicError(error);return {readAt:now.toISOString(),namespace:NAMESPACE,available:false,error:e};}}
+ if(['analytics','scan','qualifiers','prefilter'].includes(options.view)){try{return await readAutomation({...options,day},select,now);}catch(error){const e=publicError(error);return {readAt:now.toISOString(),namespace:NAMESPACE,available:false,error:e};}}
  if(options.view==='demo'){if(options.strategy!==null)throw new Error('BAD_REQUEST');const rows=await select(DEMO_SELECT,[DEMO_NAMESPACE]);return {readAt:now.toISOString(),namespace:NAMESPACE,demoNamespace:DEMO_NAMESPACE,excludedFromPerformance:true,rows};}
  if(options.view==='history'){
   const raw=await select('SELECT quote_at,price FROM paper_quote_audit WHERE namespace=? AND symbol=? AND accepted=1 AND price>0 AND quote_at IS NOT NULL ORDER BY quote_at DESC,id DESC LIMIT 60',[NAMESPACE,options.symbol]);

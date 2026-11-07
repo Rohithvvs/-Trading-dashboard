@@ -1,0 +1,238 @@
+[
+  {
+    "symbol": "AEGISCHEM-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "ALOKINDS-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "AMIORG-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "BARBEQUE-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "CENTURYTEX-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "CIGNITITEC-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "DBCORP-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "DHANI-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "GMRINFRA-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "GANESHHOUC-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "GLS-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "GUJGASLTD-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "GSPL-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "HEG-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "HBLPOWER-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "HFCL-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "HSCL-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "ICICIPRULI-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "ISEC-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "IDFC-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "IIFLSEC-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "ITDCEM-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "IBULHSGFIN-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "IBREALEST-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "INFIBEAM-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "JBCHEPHARM-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "JAIBALAJI-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "JPASSOCIAT-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "JPPOWER-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "JCHAC-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "L&TFH-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "LTIM-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "NETWORK18-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "PEL-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "RAJESHEXPO-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "RTNPOWER-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "RELINFRA-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "RPOWER-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SANGHIIND-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SCHNEIDER-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SEQUENT-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "STLTECH-EQ",
+    "reason": "original_audit_exclusion:stale"
+  },
+  {
+    "symbol": "SPARC-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SUVENPHAR-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SUZLON-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "SWANENERGY-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TARC-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TCNSBRANDS-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TV18BRDCST-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TVSHLTD-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TATAINVEST-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TATAMTRDVR-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TATAMOTORS-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TIDEWATER-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "TIPSINDLTD-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "UJJIVAN-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "MCDOWELL-N-EQ",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "WOCKPHARMA-BE",
+    "reason": "original_audit_exclusion:missing"
+  },
+  {
+    "symbol": "ZOMATO-EQ",
+    "reason": "original_audit_exclusion:missing"
+  }
+]
