@@ -1,0 +1,105 @@
+{
+  "smoke": "PASS",
+  "summary": {
+    "namespace": "paper_v1",
+    "day": "2026-11-07",
+    "totals": {
+      "filledOrders": 0,
+      "closedTrades": 0,
+      "todayFills": 0,
+      "openPositions": 0,
+      "realized": 0,
+      "unrealized": 0,
+      "total": 0,
+      "daily": 0,
+      "staleMarks": 0,
+      "missingMarks": 0,
+      "pendingSignals": 0
+    },
+    "coverage": {
+      "watermarks": 4844,
+      "excluded_bars": 2,
+      "pending_signals": 0
+    },
+    "market": {
+      "open": false,
+      "label": "NSE session closed",
+      "calendarValidThrough": "2026-12-31"
+    },
+    "latestSnapshot": {
+      "day": "2026-11-07",
+      "asOf": "2026-11-07T10:39:40.023349+05:30",
+      "daily": 0,
+      "total": 0,
+      "realizedClosuresToday": 0,
+      "valuationIsLive": false,
+      "missingDailyBasis": []
+    }
+  },
+  "checks": [
+    {
+      "view": "overview",
+      "status": 200,
+      "rows": null,
+      "total": null,
+      "readAt": "2026-11-07T05:10:16.353Z"
+    },
+    {
+      "view": "fills",
+      "status": 200,
+      "rows": 0,
+      "total": 0,
+      "readAt": "2026-11-07T05:10:17.593Z"
+    },
+    {
+      "view": "positions",
+      "status": 200,
+      "rows": 0,
+      "total": 0,
+      "readAt": "2026-11-07T05:10:17.851Z"
+    },
+    {
+      "view": "signals",
+      "status": 200,
+      "rows": 0,
+      "total": 0,
+      "readAt": "2026-11-07T05:10:18.110Z"
+    },
+    {
+      "view": "runs",
+      "status": 200,
+      "rows": 22,
+      "total": 22,
+      "readAt": "2026-11-07T05:10:18.368Z"
+    },
+    {
+      "view": "quotes",
+      "status": 200,
+      "rows": 2,
+      "total": 2,
+      "readAt": "2026-11-07T05:10:18.627Z"
+    },
+    {
+      "boundary": "?namespace=other",
+      "status": 400
+    },
+    {
+      "boundary": "?limit=101&view=fills",
+      "status": 400
+    },
+    {
+      "boundary": "POST",
+      "status": 405
+    }
+  ],
+  "historyStrategies": 7,
+  "qualifierCounts": [
+    49,
+    19,
+    19,
+    7,
+    6,
+    7,
+    89
+  ]
+}

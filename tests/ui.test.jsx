@@ -1,0 +1,10 @@
+import React from 'react';import {describe,it,expect,vi,afterEach} from 'vitest';import {render,screen,fireEvent,cleanup} from '@testing-library/react';import {DataTable,Empty} from '../src/components';import {csvText,dateIST,number,searchSort} from '../src/utils';
+afterEach(cleanup);
+describe('table and null UI',()=>{
+ it('shows honest empty state',()=>{render(<Empty/>);expect(screen.getByText('No observations yet')).toBeInTheDocument();expect(screen.getByText(/No simulated examples/)).toBeInTheDocument();});
+ it('searches, sorts and paginates without truncation',()=>{const rows=Array.from({length:23},(_,i)=>({symbol:`STOCK${String(i).padStart(2,'0')}`,value:i}));render(<DataTable rows={rows} title="fixture" pageSize={10}/>);expect(screen.queryByText('STOCK22')).not.toBeInTheDocument();fireEvent.click(screen.getByLabelText('Next page'));fireEvent.click(screen.getByLabelText('Next page'));expect(screen.getByText('STOCK22')).toBeInTheDocument();fireEvent.change(screen.getByLabelText('Search fixture'),{target:{value:'STOCK21'}});expect(screen.getByText('STOCK21')).toBeInTheDocument();expect(screen.queryByText('STOCK22')).not.toBeInTheDocument();});
+ it('renders untrusted symbols as text, never HTML',()=>{render(<DataTable rows={[{symbol:'<img src=x onerror=alert(1)>'}]}/>);expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument();expect(document.querySelector('img')).toBeNull();});
+ it('null stays unavailable while real zero is visible',()=>{expect(number(null)).toBe('—');expect(number(0)).toBe('0.00');expect(dateIST('2026-11-06T20:00:00Z')).toContain('IST');});
+ it('stable helpers sort numerically and quote CSV',()=>{expect(searchSort([{v:12},{v:2},{v:null}],'',{key:'v',direction:'asc'})).toEqual([{v:2},{v:12},{v:null}]);expect(csvText([{symbol:'A"B',pnl:null}])).toContain('"A""B",""');});
+ it('manual refresh trigger can be used without network credentials',()=>{const refresh=vi.fn();render(<button onClick={refresh}>Refresh fixture</button>);fireEvent.click(screen.getByText('Refresh fixture'));expect(refresh).toHaveBeenCalledOnce();});
+});

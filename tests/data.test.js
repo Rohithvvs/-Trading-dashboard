@@ -1,0 +1,28 @@
+import {describe,it,expect,vi} from 'vitest';import {readDashboard,parseOptions,positionView,istDay,marketState,NAMESPACE,numeric,publicRows} from '../server/data.mjs';import {createHandler} from '../api/dashboard.js';
+const now=new Date('2026-11-07T04:30:00Z');
+function executeFixture(){const calls=[];const execute=async(sql,args)=>{calls.push({sql,args});if(sql.includes('AS filled_orders'))return [{filled_orders:0,realized:0,closed_trades:0,today_fills:0}];if(sql.includes('AS watermarks'))return [{watermarks:4844,excluded_bars:2,pending_signals:0}];if(sql.includes('AS total'))return [{total:0}];return [];};return {calls,execute};}
+const request=(query={},method='GET')=>({query,method,headers:{'x-forwarded-for':crypto.randomUUID()}});
+function response(){return {headers:{},setHeader(k,v){this.headers[k]=v;},status(n){this.code=n;return this;},json(v){this.body=v;return this;}};}
+describe('read-only parameter boundary',()=>{
+ it('pins namespace and rejects arbitrary SQL / namespace',()=>{expect(NAMESPACE).toBe('paper_v1');expect(()=>parseOptions({sql:'DROP TABLE x'})).toThrow();expect(()=>parseOptions({namespace:'test'})).toThrow();});
+ it.each([{view:'unknown'},{page:-1},{page:1.2},{limit:101},{strategy:'1 OR 1=1'},{strategy:8},{scope:'arbitrary'},{page:'x'},{view:['fills','positions']}])('rejects invalid input %j',q=>expect(()=>parseOptions(q)).toThrow('BAD_REQUEST'));
+ it('binds strategy, namespace, local day, limit and offset',async()=>{const f=executeFixture();await readDashboard(parseOptions({view:'fills',strategy:'3',scope:'today',page:'2',limit:'10'}),f.execute,now);expect(f.calls).toHaveLength(2);for(const c of f.calls){expect(c.sql).toMatch(/^SELECT /);expect(c.args[0]).toBe('paper_v1');expect(c.args[1]).toBe(3);expect(c.args[2]).toBe('2026-11-07');}expect(f.calls[1].args.slice(-2)).toEqual([10,10]);});
+ it('does not expose raw run payloads',async()=>{const f=executeFixture();await readDashboard(parseOptions({view:'runs'}),f.execute,now);expect(f.calls[1].sql).not.toContain('details_json');});
+});
+describe('time, marks and honest empty ledger',()=>{
+ it('converts UTC day into IST correctly at midnight',()=>expect(istDay('2026-11-06T20:00:00Z')).toBe('2026-11-07'));
+ it('fails closed on Saturday and unreviewed dates',()=>{expect(marketState(now).open).toBe(false);expect(marketState(new Date('2027-01-04T05:00:00Z')).open).toBe(false);});
+ it('recognizes reviewed special session and holiday',()=>{expect(marketState(new Date('2026-11-08T09:00:00Z')).open).toBe(true);expect(marketState(new Date('2026-11-10T05:00:00Z')).open).toBe(false);});
+ it('preserves null and invalid marks instead of zero P&L',()=>{for(const mark of [null,0,-1]){const r=positionView({qty:1,entry_price:100,mark_price:mark,mark_at:null},now.getTime());expect(r.unrealized_pnl).toBeNull();expect(r.mark_stale).toBe(true);}expect(numeric(null)).toBeNull();expect(numeric('NaN')).toBeNull();});
+ it('computes fresh and stale mark P&L with explicit age',()=>{const r=positionView({qty:2,entry_price:100,mark_price:110,mark_at:'2026-11-07T04:29:30Z'},now.getTime());expect(r.unrealized_pnl).toBe(20);expect(r.mark_stale).toBe(false);expect(positionView({...r,mark_at:'2026-11-06T04:29:30Z'},now.getTime()).mark_stale).toBe(true);});
+ it('empty production is zero realized/unrealized but no invented daily snapshot',async()=>{const f=executeFixture();const r=await readDashboard(parseOptions(),f.execute,now);expect(r.totals).toMatchObject({realized:0,unrealized:0,total:0,closedTrades:0,daily:null});expect(r.dailyHistory).toEqual([]);expect(r.performance).toHaveLength(7);expect(r.performance.every(p=>p.winRate===null)).toBe(true);expect(f.calls.every(c=>c.sql.startsWith('SELECT'))).toBe(true);});
+});
+describe('HTTP boundary',()=>{
+ it.each(['POST','PUT','PATCH','DELETE'])('rejects %s',async method=>{const reader=vi.fn();const res=response();await createHandler(reader)(request({},method),res);expect(res.code).toBe(405);expect(reader).not.toHaveBeenCalled();});
+ it('redacts backend exception and returns no credentials',async()=>{const spy=vi.spyOn(console,'error').mockImplementation(()=>{});const res=response();await createHandler(async()=>{throw new Error('secret-token libsql://private-host');})(request({view:'quotes',page:'993'}),res);expect(res.code).toBe(503);expect(JSON.stringify(res.body)).not.toMatch(/secret-token|private-host/);expect(JSON.stringify(spy.mock.calls)).not.toMatch(/secret-token|private-host/);spy.mockRestore();});
+ it('rate limits repeated clients',async()=>{const h=createHandler(async()=>({rows:[]}));const req=request({view:'quotes',page:'994'});let res;for(let i=0;i<91;i++){res=response();await h(req,res);}expect(res.code).toBe(429);});
+ it('rejects invalid request before reading the database',async()=>{const reader=vi.fn(),res=response();await createHandler(reader)(request({namespace:'foreign'}),res);expect(res.code).toBe(400);expect(reader).not.toHaveBeenCalled();});
+});
+
+it('redacts arbitrary database error text in public reason/status fields',()=>{expect(publicRows([{reason:'Bearer token=secret',status:'secret',kind:'private',source:'private'}])[0]).toEqual({reason:'recorded_event',status:'recorded',kind:'engine_run',source:'market_data'});});
+it('excludes closed qty-zero positions in overview and paginated queries',async()=>{const f=executeFixture();await readDashboard(parseOptions({view:'positions'}),f.execute,now);expect(f.calls.every(c=>c.sql.includes('qty>0'))).toBe(true);});

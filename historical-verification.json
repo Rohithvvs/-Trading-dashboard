@@ -1,0 +1,55 @@
+{
+  "sourceDate": "2026-11-06",
+  "checks": [
+    {
+      "strategy": 1,
+      "closed": 27669,
+      "qualifiers": 49,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 2,
+      "closed": 23213,
+      "qualifiers": 19,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 3,
+      "closed": 25764,
+      "qualifiers": 19,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 4,
+      "closed": 10820,
+      "qualifiers": 7,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 5,
+      "closed": 13941,
+      "qualifiers": 6,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 6,
+      "closed": 43155,
+      "qualifiers": 7,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    },
+    {
+      "strategy": 7,
+      "closed": 45799,
+      "qualifiers": 89,
+      "screenRows": 751,
+      "checks": "counts, arithmetic, filled=closed+open, all latest flags and ordered funnel reconciled"
+    }
+  ],
+  "sha256": "17e7018b6521788deee9b055b2fa013a6d837e6e5b5b3dc8ec68138eda14ad37"
+}
