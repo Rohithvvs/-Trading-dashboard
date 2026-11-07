@@ -1,0 +1,104 @@
+{
+  "verified_at_IST": "2026-11-07T12:50:42.470860+05:30",
+  "migration_version": 2,
+  "baseline_preserved": true,
+  "baseline_before": {
+    "fills": 0,
+    "open_positions": 0,
+    "signals": 0,
+    "watermarks": 4844,
+    "isolated_demo": 1,
+    "latest_daily_bar": "2026-11-06"
+  },
+  "baseline_after": {
+    "fills": 0,
+    "open_positions": 0,
+    "signals": 0,
+    "watermarks": 4844,
+    "isolated_demo": 1,
+    "latest_daily_bar": "2026-11-06"
+  },
+  "tables": {
+    "paper_charge_policies": 1,
+    "paper_fill_costs": 0,
+    "paper_dp_debits": 0,
+    "paper_entry_cohorts": 0,
+    "paper_scan_batches": 1,
+    "paper_qualifier_states": 4844,
+    "paper_monitor_health": 0,
+    "paper_eod": 0
+  },
+  "current_bar": "2026-11-06",
+  "per_strategy": [
+    {
+      "strategy": 1,
+      "symbols": 692,
+      "qualified": 49
+    },
+    {
+      "strategy": 2,
+      "symbols": 692,
+      "qualified": 19
+    },
+    {
+      "strategy": 3,
+      "symbols": 692,
+      "qualified": 19
+    },
+    {
+      "strategy": 4,
+      "symbols": 692,
+      "qualified": 7
+    },
+    {
+      "strategy": 5,
+      "symbols": 692,
+      "qualified": 6
+    },
+    {
+      "strategy": 6,
+      "symbols": 692,
+      "qualified": 7
+    },
+    {
+      "strategy": 7,
+      "symbols": 692,
+      "qualified": 89
+    }
+  ],
+  "unique_qualifying_stocks": 156,
+  "overlap_buckets": {
+    "single": 118,
+    "exactly_2": 36,
+    "exactly_3": 2,
+    "4_plus": 0
+  },
+  "overlap_max": 3,
+  "overlap_memberships_reconcile": true,
+  "screen_only_no_signals": true,
+  "gross_paise": 0,
+  "net_accrued_paise": 0,
+  "ledger_reconciled": true,
+  "credential_file_permission": "0o600",
+  "market_session_live_execution_verified": false,
+  "scheduler_changes_saved": false,
+  "eod_closed_day_gate": "not_verified_weekday_eod; no snapshot written",
+  "automatic_sunday_execution": false,
+  "calendar_and_policy_valid_through": "2026-12-31",
+  "live_broker_orders": 0,
+  "installed_engine_tests": 68,
+  "source_package_engine_tests": 68,
+  "dashboard_tests": 78,
+  "lint": "PASS",
+  "build": "PASS",
+  "secret_scan": {
+    "files": 499,
+    "exact_values_checked": 9,
+    "failures": 0,
+    "client_server_separation": true
+  },
+  "runtime_libsql_version": "0.18.0",
+  "runtime_source_matches_package": true,
+  "fyers_market_session_probe_performed": false,
+  "new_durable_routines_saved": false
+}

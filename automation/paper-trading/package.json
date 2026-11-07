@@ -1,0 +1,1 @@
+{"name":"paper-only-session-engine","private":true,"type":"module","scripts":{"test":"python3 -m unittest discover -s tests -v"},"dependencies":{"@libsql/client":"0.18.0"}}

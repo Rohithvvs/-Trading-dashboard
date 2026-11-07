@@ -151,3 +151,7 @@ Charts (line, exit-month arithmetic-mean bars, win/loss/flat donut) expose actua
 ### Trade-plan limits
 
 No invented fixed price targets or extra hard stops. Six strategies use their prescribed indicator/channel exits. Momentum alone has the prescribed10% highest-completed-close trailing stop; a90%-of-saved-close illustration is explicitly not an active order stop. Actual fills/high-water are unknown before an entry. Reference closes are frozen historical data, not live quotes. Historical next-open fills and live-paper first-fresh-observed-LTP execution are distinguished. Browsing an old fresh/held qualifier never creates a live order.
+
+## Box-hosted paper automation source
+
+Versioned engine source, additive schema, isolated tests, fee policy and operational commands are in [`automation/paper-trading`](automation/paper-trading/README.md). Vercel serves only this dashboard/read-only API; the session worker runs separately on the bot box and needs durable supervisor/scan/EOD routines. No credentials or runtime logs are part of that package. Gross legacy fields remain gross; modeled fees/net P&L and immutable entry-overlap cohorts have explicit contracts in its README.

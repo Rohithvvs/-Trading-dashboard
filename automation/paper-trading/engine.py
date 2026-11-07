@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""PAPER ONLY: allowlisted read-only market data; no broker order methods."""
+import argparse,ast,contextlib,csv,fcntl,hashlib,io,json,math,os,subprocess,sys,time
+from datetime import datetime,date,timedelta,time as dt_time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+import numpy as np
+import pandas as pd
+import requests
+import automation as au
+ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
+RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
+for folder in ['logs','out','tests']:(ROOT/folder).mkdir(exist_ok=True)
+if CFG.get('paper_only') is not True:raise SystemExit('PAPER_ONLY_MODE_REQUIRED')
+if not isinstance(CFG['quantity'],int) or CFG['quantity']!=1:raise SystemExit('POSITIVE_INTEGER_QUANTITY_REQUIRED')
+NS=CFG['namespace']; AUTH_ROUTES={'quotes':'https://api-t1.fyers.in/data/quotes','history':'https://api-t1.fyers.in/data/history'}
+def now():return datetime.now(IST)
+def js(v):return json.dumps(v,default=str,allow_nan=False)
+def log(kind,**data):
+ r={'at_IST':now().isoformat(),'namespace':NS,'kind':kind,**data}
+ with (ROOT/('logs/tests.jsonl' if NS.startswith('test_') else 'logs/engine.jsonl')).open('a') as f:f.write(js(r)+'\n')
+ return r
+class DB:
+ def __init__(self,test_database=None):self.test_database=test_database
+ def call(self,a):
+  if self.test_database:a={**a,'test_database':self.test_database}
+  r=subprocess.run(['node',str(ROOT/'db.mjs')],input=js(a),text=True,capture_output=True,timeout=120)
+  if r.returncode:
+   try:code=json.loads(r.stderr).get('code','Turso_operation_failed')
+   except (ValueError,AttributeError):code='Turso_operation_failed'
+   raise RuntimeError(code if len(code)<90 and all(c.isalnum() or c=='_' for c in code) else 'Turso_operation_failed')
+  return json.loads(r.stdout)
+ def query(self,sql,args=()):return self.call({'action':'query','sql':sql,'args':list(args)})
+ def batch(self,statements):
+  if statements:self.call({'action':'batch','statements':[{'sql':s,'args':list(a)} for s,a in statements]})
+ def run(self,kind,run_status,**detail):self.batch([('INSERT INTO paper_runs(namespace,kind,at,status,details_json) VALUES(?,?,?,?,?)',(NS,kind,now().isoformat(),run_status,js(detail)))])
+ def positions(self):return self.query('SELECT * FROM paper_positions WHERE namespace=? AND qty>0 AND strategy BETWEEN 1 AND 7',(NS,))
+def session(d):
+ key=d.isoformat()
+ if not CFG['calendar_valid_from']<=key<=CFG['calendar_valid_through']:return None
+ if key in CFG['special_sessions']:return tuple(dt_time.fromisoformat(t) for t in CFG['special_sessions'][key])
+ if d.weekday()>=5 or key in CFG['holidays']:return ()
+ return (dt_time(9,15),dt_time(15,30))
+def is_open(t):
+ s=session(t.date());return bool(s and s[0]<=t.timetz().replace(tzinfo=None)<s[1])
+def next_session(d):
+ for k in range(1,370):
+  t=d+timedelta(days=k);s=session(t)
+  if s is None:raise RuntimeError('calendar_unverified_next_session')
+  if s:return t
+ raise RuntimeError('no_session')
+def completed_day(t):
+ for k in range(370):
+  d=t.date()-timedelta(days=k);s=session(d)
+  if s is None:raise RuntimeError('calendar_unverified_completed_session')
+  if s and (d<t.date() or t.timetz().replace(tzinfo=None)>=dt_time(16,0)):return d
+ raise RuntimeError('no_completed_session')
+def load_env():
+ sys.path.insert(0,str(LEGACY));from fyers_auth import load_env as f
+ return f(LEGACY/'.env')
+class MarketData:
+ def __init__(self):self.env=load_env();self.refreshed=False;self.last=0
+ def refresh(self):
+  if self.refreshed:
+   (ROOT/'auth_circuit.json').write_text(js({'open':True,'at':now().isoformat()}));raise RuntimeError('auth_failed_after_single_refresh')
+  circuit=ROOT/'auth_circuit.json'
+  if circuit.exists():
+   c=json.loads(circuit.read_text())
+   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<1800:raise RuntimeError('auth_circuit_open_30min')
+  self.refreshed=True
+  src=(LEGACY/'fyers_auth.py').read_text().replace('for url, payload in otp_urls:','for url, payload in otp_urls[:1]:').replace('for label, ident in (("b64", pin_b64), ("sha256", pin_sha), ("raw", pin)):', 'for label, ident in (("b64", pin_b64),):')
+  ns={'__file__':str(LEGACY/'fyers_auth.py'),'__name__':'paper_authorized_refresh'};exec(compile(src,str(LEGACY/'fyers_auth.py'),'exec'),ns)
+  try:
+   with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):code=ns['main']()
+  except Exception:
+   circuit.write_text(js({'open':True,'at':now().isoformat()}));raise RuntimeError('token_refresh_failed') from None
+  if code:
+   circuit.write_text(js({'open':True,'at':now().isoformat()}));raise RuntimeError('token_refresh_failed')
+  self.env=load_env();circuit.write_text(js({'open':False,'at':now().isoformat()}));log('auth_refresh',success=True)
+ def get(self,route,params):
+  circuit=ROOT/'auth_circuit.json'
+  if circuit.exists():
+   c=json.loads(circuit.read_text())
+   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<1800:raise RuntimeError('auth_circuit_open_30min')
+  assert route in AUTH_ROUTES
+  for attempt in range(3):
+   wait=1.3-(time.monotonic()-self.last)
+   if wait>0:time.sleep(wait)
+   self.last=time.monotonic()
+   try:r=requests.get(AUTH_ROUTES[route],params=params,headers={'Authorization':self.env['FYERS_APP_ID']+':'+self.env['FYERS_ACCESS_TOKEN']},timeout=30);d=r.json()
+   except Exception:raise RuntimeError('market_data_transport_failed') from None
+   if r.status_code in (401,403) or d.get('code') in (-8,-15,-16,-17):
+    self.refresh();continue
+   if r.status_code==429 or d.get('code')==-360:
+    if attempt<2:time.sleep(65);continue
+    raise RuntimeError('market_data_rate_limit')
+   if d.get('s')!='ok':raise RuntimeError('market_data_error_'+str(d.get('code')))
+   return d
+  raise RuntimeError('market_data_request_failed')
+ def quotes(self,symbols):
+  out={}
+  for i in range(0,len(symbols),50):
+   d=self.get('quotes',{'symbols':','.join('NSE:'+s for s in symbols[i:i+50])})
+   for x in d.get('d',[]):
+    v=x.get('v') or {};sym=(x.get('n') or v.get('symbol') or '').replace('NSE:','');tt=v.get('tt'); stamp=None
+    try:
+     stamp=datetime.fromtimestamp(float(tt),IST).isoformat() if str(tt).replace('.','',1).isdigit() else datetime.fromisoformat(str(tt)).astimezone(IST).isoformat()
+    except Exception:pass
+    p=v.get('lp')
+    try:p=float(p);p=p if math.isfinite(p) else None
+    except (TypeError,ValueError):p=None
+    out[sym]={'symbol':sym,'price':p,'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES'}
+  for sym in symbols:out.setdefault(sym,{'symbol':sym,'price':None,'quote_at':None,'provider_status':'missing','source':'FYERS_QUOTES'})
+  return out
+ def history(self,symbol,start,end):
+  return self.get('history',{'symbol':'NSE:'+symbol,'resolution':'1D','date_format':'1','range_from':str(start),'range_to':str(end) }).get('candles') or []
+def valid_quote(q,t):
+ if not is_open(t):return False,'market_closed_or_unverified'
+ if q and q.get('provider_status','ok')!='ok':return False,'provider_quote_error'
+ if not q or q.get('price') is None or not math.isfinite(q['price']) or q['price']<=0:return False,'nonpositive_or_missing_price'
+ if not q.get('quote_at'):return False,'missing_exchange_timestamp'
+ qt=datetime.fromisoformat(q['quote_at']);age=(t-qt).total_seconds()
+ if qt.date()!=t.date() or age>CFG['quote_max_age_seconds'] or age< -5:return False,'stale_or_future_quote'
+ if not is_open(qt):return False,'quote_outside_verified_session'
+ return True,'fresh'
+def audit_quotes(db,quotes,t):
+ rows=[]
+ for sym,q in quotes.items():
+  ok,why=valid_quote(q,t);rows.append(('INSERT INTO paper_quote_audit(namespace,symbol,observed_at,quote_at,price,accepted,reason) VALUES(?,?,?,?,?,?,?)',(NS,sym,t.isoformat(),q.get('quote_at'),q.get('price'),int(ok),why)))
+ db.batch(rows)
+def stable_id(*parts):return hashlib.sha256('|'.join(map(str,parts)).encode()).hexdigest()
+def fill(db,s,q,t):
+ ok,why=valid_quote(q,t)
+ if not ok:return {'filled':False,'reason':why}
+ if s['eligible_date']>t.date().isoformat():return {'filled':False,'reason':'not_yet_eligible'}
+ if s['side']=='BUY' and not s.get('stop'):
+  # A delayed pending entry must not turn into an arbitrarily old new entry.
+  eligible=date.fromisoformat(s['eligible_date'])
+  if eligible<t.date():
+   db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);return {'filled':False,'reason':'expired_entry_signal'}
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':CFG['quantity'],'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r);return r
+STRATEGY_SOURCES={2:'02_supertrend/2026-11-07_run/run_strategy2.py',3:'03_rsi_pullback/2026-11-07_run/run_strategy3.py',4:'04_dual_ma/2026-11-07_run/run_strategy4.py',5:'05_bollinger_reversion/2026-11-07_run/run_strategy5.py',6:'06_macd_trend/2026-11-07_run/run_strategy6.py',7:'07_52week_momentum/2026-11-07_run/run_strategy7.py'}
+def indicator(strategy,g):
+ if strategy==1:
+  f=g.copy();f['entry_condition']=f.close>f.high.shift().rolling(20).max();f['exit_condition']=f.close<f.low.shift().rolling(10).min();return f
+ import strategy_indicators
+ return getattr(strategy_indicators,'strategy_'+str(strategy))(g)
+def universe():
+ return sorted(pd.read_csv(ROOT/'universe.csv').db_symbol.tolist())
+def sync(db,api,target,symbols):
+ cv={x['symbol']:x['dmax'] for x in db.query('SELECT symbol,MAX(trade_date) AS dmax FROM daily_ohlcv GROUP BY symbol')};n=0;invalid=[];pending_sync=[]
+ for sym in symbols:
+  if cv.get(sym,'')>=str(target):continue
+  if not cv.get(sym):invalid.append({'symbol':sym,'reason':'no_existing_history_unverified_identity'});continue
+  start=max(date.fromisoformat(cv[sym])+timedelta(days=1),target-timedelta(days=364))
+  try:candles=api.history(sym,start,target)
+  except RuntimeError as e:
+   if str(e).startswith('market_data_error_') and '300' in str(e):invalid.append({'symbol':sym,'reason':'invalid_symbol'});continue
+   raise
+  st=[]
+  for c in candles:
+   ts,o,h,l,cl,v=c[:6];d=datetime.fromtimestamp(ts,IST).date()
+   if d>target:continue
+   if not session(d):
+    st.append(('INSERT OR IGNORE INTO paper_data_audit(namespace,symbol,bar_date,reason,observed_at) VALUES(?,?,?,?,?)',(NS,sym,str(d),'unverified_or_closed_session_candle',now().isoformat())));continue
+   if not all(math.isfinite(float(x)) and x>0 for x in [o,h,l,cl]) or not (h>=max(o,l,cl) and l<=min(o,h,cl)):
+    st.append(('INSERT OR IGNORE INTO paper_data_audit(namespace,symbol,bar_date,reason,observed_at) VALUES(?,?,?,?,?)',(NS,sym,str(d),'invalid_Fyers_OHLC',now().isoformat())));continue
+   st.append(('INSERT OR IGNORE INTO daily_ohlcv(trade_date,symbol,open,high,low,close,volume,turnover,source,loaded_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(str(d),sym,o,h,l,cl,v,float(cl)*float(v),'FYERS_PAPER_SYNC',now().isoformat())));n+=1
+  pending_sync.extend(st)
+  if len(pending_sync)>=150:db.batch(pending_sync);pending_sync=[]
+ db.batch(pending_sync)
+ log('history_sync',candidate_candles=n,unavailable=invalid);return {'candidate_candles':n,'unavailable':invalid}
+def read_history(db,symbols,target):
+ rows=[]
+ for i in range(0,len(symbols),25):
+  sy=symbols[i:i+25];rows+=db.query('SELECT symbol,trade_date,open,high,low,close,volume FROM daily_ohlcv WHERE symbol IN ('+','.join('?'*len(sy))+') AND trade_date<=? ORDER BY symbol,trade_date',sy+[str(target)])
+ return pd.DataFrame(rows)
+def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
+ t=now()
+ if not bootstrap and not snapshot_only and (t.weekday()>=5 or not session(t.date())):return {'status':'not_verified_weekday_scan','signals_queued':0}
+ target=completed_day(t);positions=db.positions();syms=sorted(set(universe())|{p['symbol'] for p in positions})
+ existing=db.query('SELECT strategy,symbol,bar_date FROM paper_watermarks WHERE namespace=?',(NS,))
+ if bootstrap and existing and not snapshot_only:return {'status':'already_bootstrapped','signals_queued':0,'no_backlog_fills':True}
+ sync_report=sync(db,api,target,syms) if do_sync else None
+ raw=read_history(db,syms,target);assert len(raw)>0
+ valid=(raw[['open','high','low','close']]>0).all(axis=1)&np.isfinite(raw[['open','high','low','close']]).all(axis=1)&(raw.high>=raw[['open','close','low']].max(axis=1))&(raw.low<=raw[['open','close','high']].min(axis=1))
+ stm=[('INSERT OR IGNORE INTO paper_data_audit(namespace,symbol,bar_date,reason,observed_at) VALUES(?,?,?,?,?)',(NS,x.symbol,x.trade_date,'nonpositive_nonfinite_or_inconsistent_OHLC',t.isoformat())) for x in raw[~valid].itertuples(index=False)]
+ raw=raw[valid].copy();wm={(r['strategy'],r['symbol']):r['bar_date'] for r in db.query('SELECT * FROM paper_watermarks WHERE namespace=?',(NS,))};pos={(p['strategy'],p['symbol']):p for p in positions};pending_rows=db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,));pending=set()
+ for s in pending_rows:
+  if not snapshot_only and s['side']=='BUY' and s['eligible_date']<=str(target):stm.append(("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id'])))
+  else:pending.add((s['strategy'],s['symbol'],s['side']))
+ qual=[];created=0;funnel={str(i):{'current_symbols':0,'individual_pass_counts':{},'sequential_pass_counts':{},'qualified':0} for i in range(1,8)};skipped=[sym for sym in syms if sym not in set(raw.symbol)]
+ for sym,g in raw.groupby('symbol'):
+  g=g.sort_values('trade_date').reset_index(drop=True)
+  if str(g.iloc[-1].trade_date)!=str(target):skipped.append(sym);continue
+  for strategy in range(1,8):
+   f=indicator(strategy,g);x=f.iloc[-1];bar=str(x.trade_date);key=(strategy,sym);p=pos.get(key)
+   stm.append(('INSERT INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,strategy,symbol) DO UPDATE SET qualified=excluded.qualified,checklist_json=excluded.checklist_json,plan_json=excluded.plan_json,scanned_at=excluded.scanned_at',(NS,bar,strategy,sym,int(bool(x.entry_condition)),js(au.checklist(sys.modules[__name__],strategy,f)),js(au.plan(sys.modules[__name__],strategy,x)),t.isoformat())))
+   checks=au.checklist(sys.modules[__name__],strategy,f)['checks'];counts=funnel[str(strategy)];counts['current_symbols']+=1;sofar=True
+   for name,passed in checks.items():
+    counts['individual_pass_counts'][name]=counts['individual_pass_counts'].get(name,0)+int(passed);sofar=sofar and passed;counts['sequential_pass_counts'][name]=counts['sequential_pass_counts'].get(name,0)+int(sofar)
+   counts['qualified']+=int(bool(x.entry_condition))
+   if x.entry_condition:qual.append({'strategy':strategy,'symbol':sym,'bar_date':bar,'held':bool(p),'close':float(x.close),'indicator_values_json':json.dumps(x.to_dict(),default=str)})
+   if snapshot_only:continue
+   previous=wm.get(key)
+   if bootstrap or previous is None:
+    stm.append(('INSERT INTO paper_watermarks(namespace,strategy,symbol,bar_date) VALUES(?,?,?,?) ON CONFLICT(namespace,strategy,symbol) DO UPDATE SET bar_date=excluded.bar_date',(NS,strategy,sym,bar)));continue
+   if previous>=bar:continue
+   newbars=f[(f.trade_date>previous)&(f.trade_date>=datetime.fromisoformat(p['entry_at']).date().isoformat())] if p else f.iloc[0:0]
+   missed_exit=bool(newbars.exit_condition.any()) if len(newbars) else False
+   side='SELL' if p and missed_exit else ('BUY' if not p and bool(x.entry_condition) else None)
+   if side and (strategy,sym,side) not in pending:
+    sid=stable_id(strategy,sym,bar,side);eligible=str(next_session(target));stm.append(('INSERT OR IGNORE INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',(NS,sid,strategy,sym,bar,side,'pending','daily_exit:'+p['entry_at'] if side=='SELL' else 'daily_entry',t.isoformat(),eligible)));created+=1
+   if p and strategy==7:
+    # Only completed closes on/after the actual paper entry can raise the stop.
+    since=g[(g.trade_date>=datetime.fromisoformat(p['entry_at']).date().isoformat())&(g.trade_date<=bar)]
+    H=max(p['high_water'],float(since.close.max())) if len(since) else p['high_water'];stm.append(('UPDATE paper_positions SET high_water=MAX(high_water,?),updated_at=? WHERE namespace=? AND strategy=7 AND symbol=? AND qty>0',(H,t.isoformat(),NS,sym)))
+   stm.append(('UPDATE paper_watermarks SET bar_date=? WHERE namespace=? AND strategy=? AND symbol=?',(bar,NS,strategy,sym)))
+ for sym in sorted(set(skipped)):
+  for strategy in range(1,8):stm.append(('INSERT INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,strategy,symbol) DO UPDATE SET qualified=0,checklist_json=excluded.checklist_json,scanned_at=excluded.scanned_at',(NS,str(target),strategy,sym,0,js({'data_current':False,'reason':'missing_or_stale_history','all_filters_satisfied':None}),'{}',t.isoformat())))
+ if not NS.startswith('test_'):pd.DataFrame(qual).to_csv(ROOT/'out/latest_qualifiers.csv',index=False)
+ report={'target_completed_bar':str(target),'bootstrap':bootstrap,'funnel':funnel,'universe_symbols':len(syms),'frozen_universe_symbols':len(universe()),'excluded_audit_symbols':59,'original_audit_universe':751,'signals_queued':created,'latest_qualifiers':len(qual),'unavailable_current_symbols':skipped,'invalid_rows_excluded':int((~valid).sum()),'sync':sync_report,'no_backlog_fills':True,'screen_only':snapshot_only};stm.append(('INSERT INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace,bar_date) DO UPDATE SET scanned_at=excluded.scanned_at,status=excluded.status,report_json=excluded.report_json',(NS,str(target),t.isoformat(),'partial' if skipped else 'ok',js(report))));db.batch(stm);db.run('scan','partial' if skipped else 'ok',**report);return report
+
+def monitor(db,api):
+ t=now()
+ if not au.active(sys.modules[__name__],t):r={'status':'market_closed_or_calendar_unverified','at_IST':t.isoformat(),'fills':0};db.run('monitor','closed',**r);return r
+ positions=db.positions();signals=db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,));symbols=sorted({p['symbol'] for p in positions}|{s['symbol'] for s in signals})
+ if not symbols:return {'status':'idle','fills':0,'at_IST':t.isoformat()}
+ quotes=api.quotes(symbols);t=now();audit_quotes(db,quotes,t);fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
+ # Every pending exit is processed before entries. Momentum observed-price stop uses actual LTP, never synthetic threshold fill.
+ actions=[]
+ for p in positions:
+  q=quotes.get(p['symbol']);ok,_=valid_quote(q,t)
+  if ok and p['strategy']==7 and q['price']<=.9*p['high_water']:
+   actions.append({'id':stable_id(7,p['symbol'],p['entry_at'],'stop'),'strategy':7,'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True})
+ actions+=sorted(signals,key=lambda s:0 if s['side']=='SELL' else 1)
+ for s in actions:
+  key=(s['strategy'],s['symbol'])
+  if key in used:continue
+  r=fill(db,s,quotes.get(s['symbol']),now())
+  if r['filled']:fills+=1;used.add(key)
+ # Entry-day stop cannot be hit by the exact same entry LTP; it is checked on subsequent fresh polls.
+ st=[];t=now()
+ for sym,q in quotes.items():
+  ok,_=valid_quote(q,t)
+  if ok:st.append(('UPDATE paper_positions SET mark_price=?,mark_at=?,updated_at=? WHERE namespace=? AND symbol=? AND qty>0',(q['price'],q['quote_at'],t.isoformat(),NS,sym)))
+ db.batch(st);report={'status':'ok','fresh_quotes':sum(valid_quote(q,t)[0] for q in quotes.values()),'quotes':len(quotes),'fills':fills,'at_IST':t.isoformat()};db.run('monitor','ok',**report);return report
+
+def pnl(db):
+ t=now();day=t.date().isoformat();ps=db.positions();fills=db.query('SELECT * FROM paper_fills WHERE namespace=?',(NS,));today=[x for x in fills if datetime.fromisoformat(x['filled_at']).astimezone(IST).date()==t.date()];realized=sum(x['realized_pnl'] for x in fills);unrealized=0.;unknown=[];stale=[]
+ for p in ps:
+  if p['mark_price'] is None:unknown.append(p['symbol']);continue
+  unrealized+=(p['mark_price']-p['entry_price'])*p['qty']
+  if not p['mark_at'] or (t-datetime.fromisoformat(p['mark_at'])).total_seconds()>CFG['quote_max_age_seconds']:stale.append(p['symbol'])
+ keys={(p['strategy'],p['symbol']) for p in ps}|{(x['strategy'],x['symbol']) for x in today};daily=0.;missing=[]
+ for strategy,sym in keys:
+  pos=next((p for p in ps if p['strategy']==strategy and p['symbol']==sym),None);ff=[x for x in today if x['strategy']==strategy and x['symbol']==sym];endqty=pos['qty'] if pos else 0;startqty=endqty-sum(x['qty'] if x['side']=='BUY' else -x['qty'] for x in ff)
+  base=0
+  if startqty:
+   r=db.query('SELECT trade_date,close FROM daily_ohlcv WHERE symbol=? AND trade_date<? AND close>0 ORDER BY trade_date DESC LIMIT 1',(sym,day))
+   if not r or r[0]['trade_date']!=str(completed_day(t.replace(hour=0,minute=0,second=0,microsecond=0))):missing.append(sym);continue
+   base=startqty*r[0]['close']
+  if endqty and pos['mark_price'] is None:missing.append(sym);continue
+  daily+=(endqty*pos['mark_price'] if pos else 0)-base+sum(x['cashflow'] for x in ff)
+ report={'namespace':NS,'as_of_IST':t.isoformat(),'today_fills':len(today),'open_positions':len(ps),'cumulative_realized_pnl_INR':realized,'latest_known_unrealized_pnl_INR':None if unknown else unrealized,'latest_known_total_pnl_INR':None if unknown else realized+unrealized,'daily_mark_to_market_pnl_INR':None if missing else daily,'realized_on_closures_today_INR':sum(x['realized_pnl'] for x in today),'missing_marks':unknown,'stale_mark_symbols':sorted(set(stale)),'missing_daily_basis_symbols':missing,'daily_formula':'ending marked value - starting prior-close value + sell proceeds - buy payments; zero costs','valuation_is_live':is_open(t) and not(stale or unknown),'capital_return_pct':None,'costs_INR':0}
+ report['costs_INR']=None;report['daily_formula']='ending marked value - prior-close basis + sell proceeds - buy payments; legacy GROSS before modeled costs'
+ report['estimated_finance']=au.finance(sys.modules[__name__],db)
+ db.batch([('INSERT INTO paper_pnl(namespace,day,as_of,report_json) VALUES(?,?,?,?) ON CONFLICT(namespace,day) DO UPDATE SET as_of=excluded.as_of,report_json=excluded.report_json',(NS,day,t.isoformat(),js(report)))]);return report
+
+def init(db):
+ stm=[(sql.strip(),()) for sql in (ROOT/'schema.sql').read_text().split(';') if sql.strip()];db.batch(stm);db.batch([('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'mode','PAPER_ONLY')),('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'automation_schema_version','2'))]);db.call({'action':'register_policy'});return {'schema':'ready','namespace':NS,'paper_only':True}
+def main():
+ parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
+ parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly']);parser.add_argument('--sync',action='store_true');args=parser.parse_args()
+ if args.command in ['worker','ensure-monitor','health']:
+  # Supervision must remain reachable even while a worker/scan holds engine.lock.
+  try:
+   db=DB();fn={'worker':au.worker,'ensure-monitor':au.ensure_monitor,'health':au.health}[args.command];print(js(fn(sys.modules[__name__],db)))
+  except Exception as ex:
+   print(js({'status':'failed','error':au.safe_error(ex),'paper_only':True}));sys.exit(1)
+  return
+ with (ROOT/'engine.lock').open('a+') as lock:
+  try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except BlockingIOError:print(js({'status':'another_engine_command_running'}));return
+  db=DB()
+  try:
+   if args.command=='init':out=init(db)
+   elif args.command=='probe':
+    api=MarketData();q=api.quotes(['RELIANCE-EQ']);t=now();audit_quotes(db,q,t);out={'market_open':is_open(t),'at_IST':t.isoformat(),'quotes':q,'acceptance':{k:valid_quote(v,t) for k,v in q.items()},'orders_sent_to_broker':0,'token_refreshed':api.refreshed};db.run('probe','ok',**out)
+   elif args.command in ['bootstrap','scan','screen-only']:out=scan(db,MarketData(),args.sync,args.command=='bootstrap',args.command=='screen-only')
+   elif args.command=='monitor-once':
+    out=monitor(db,MarketData())
+    if au.active(sys.modules[__name__],now()):out['pnl']=pnl(db)
+    else:out['snapshot_skipped_market_closed']=True
+   elif args.command=='positions':out=db.positions()
+   elif args.command=='trades-today':out=[x for x in db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(NS,)) if datetime.fromisoformat(x['filled_at']).astimezone(IST).date()==now().date()]
+   elif args.command=='pnl':out=pnl(db)
+   elif args.command=='status':out={'paper_only':True,'namespace':NS,'market_open':is_open(now()),'calendar_valid_through':CFG['calendar_valid_through'],'last_runs':db.query('SELECT kind,at,status,details_json FROM paper_runs WHERE namespace=? ORDER BY id DESC LIMIT 5',(NS,)),'pending':db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,)),'pnl':pnl(db)}
+   elif args.command=='ensure-monitor':out=au.ensure_monitor(sys.modules[__name__],db)
+   elif args.command=='health':out=au.health(sys.modules[__name__],db)
+   elif args.command=='finance':out=au.finance(sys.modules[__name__],db)
+   elif args.command=='charges':out=db.query('SELECT fill_id,day,strategy,symbol,side,policy_version,components_json,total_paise FROM paper_fill_costs WHERE namespace=? ORDER BY fill_id',(NS,))
+   elif args.command=='overlap':out=au.overlap(sys.modules[__name__],db)
+   elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
+   elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
+   log('command_completed',command=args.command,namespace=NS)
+   print(js(out))
+  except Exception as e:
+   # Exception contents can contain remote request details; only vetted internal error labels exposed.
+   reason=au.safe_error(e);log('command_failed',command=args.command,error=reason)
+   try:db.run(args.command,'failed',error=reason)
+   except Exception:pass
+   print(js({'status':'failed','error':reason,'paper_only':True}));sys.exit(1)
+if __name__=='__main__':main()

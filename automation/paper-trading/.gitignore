@@ -1,0 +1,9 @@
+.env*
+__pycache__/
+*.sqlite*
+*.lock
+*.pid
+logs/
+out/
+auth_circuit.json
+*.zip

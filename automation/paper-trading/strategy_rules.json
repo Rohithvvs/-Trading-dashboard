@@ -1,0 +1,146 @@
+{
+  "2": {
+    "strategy": "02 Supertrend(10,3), long only",
+    "TR": "TR[0]=high-low; thereafter max(high-low,abs(high-close[1]),abs(low-close[1]))",
+    "ATR10": "first valid at index9: SMA(TR[0:10]); thereafter (9*ATR[1]+TR)/10 (Wilder RMA)",
+    "basic_bands": "BU=(high+low)/2+3*ATR10; BL=(high+low)/2-3*ATR10",
+    "final_upper": "U=BU if BU<U[1] OR close[1]>U[1], otherwise U[1]",
+    "final_lower": "L=BL if BL>L[1] OR close[1]<L[1], otherwise L[1]",
+    "initialization": "first ATR-valid bar initializes red direction +1, U=BU,L=BL,ST=U; earlier indicators NaN. Initialization itself is not a flip or entry. Earliest signal index10 (11 observations).",
+    "direction": "if ST[1]==U[1]: direction=-1 when close>U else +1; otherwise direction=+1 when close<L else -1. All crossings strict. -1=green,+1=red (TradingView convention)",
+    "ST": "L if direction=-1 else U",
+    "entry": "previous direction +1 AND current direction -1 AND close>ST; enter next available symbol session open if flat",
+    "exit": "previous direction -1 AND current direction +1; exit next available symbol session open if long",
+    "position_limit": "one long per symbol",
+    "costs": "zero brokerage, taxes, spread and slippage; reported returns gross",
+    "terminal": "no forced close; open trades marked to last close separately; last-bar signals pending, not filled",
+    "portfolio_DD": "unavailable; no sizing, capital constraints or mark-to-market portfolio equity modeled",
+    "coverage": "same 692 current exact-universe stocks as Strategy1; 52 missing and seven stale excluded after prior authenticated Fyers attempts all returned symbol -300; no repeat refresh/fetch or substitutions",
+    "limitations": [
+      "present-day fixed mirrored universe: survivorship bias",
+      "unverified corporate-action adjustments in mixed Turso sources",
+      "missing observations can distort indicator history; recursive initialization matters near dataset start",
+      "zero transaction costs and unconstrained concurrent positions can overstate practical performance"
+    ]
+  },
+  "3": {
+    "strategy": "03 RSI Pullback in Uptrend",
+    "entry": "close > SMA(close,200) AND Wilder RSI(close,14) <40. Daily condition, not crossing event. Strict inequalities.",
+    "exit": "Wilder RSI14 >60 OR close > SMA(close,5). Strict inequalities.",
+    "SMA": "arithmetic means including current completed candle; 200 bars required for entry, first valid at index199",
+    "RSI": "delta=close-close[1]; gain=max(delta,0),loss=max(-delta,0); initial avgGain/avgLoss at index14 = SMA of first14 price changes; later RMA=(13*previous+current)/14; RSI=100-100/(1+avgGain/avgLoss); loss==0 gives100, gain==0 with loss>0 gives0",
+    "execution": "at each completed close, if flat and entry true schedule next available symbol session open entry; if long and exit true schedule next available open exit. One long per symbol. ATR irrelevant.",
+    "overlap": "when flat, entry is allowed even if exit also true; cannot schedule an exit before position exists. At entry-day close exit may trigger earliest next-open exit. After open exit, that close may schedule reentry for following open. Never simultaneous entry+exit on same open.",
+    "terminal": "no forced closing; open positions separately marked; final entry/exit signals unfilled and reported pending",
+    "costs": "gross returns; zero brokerage, taxes, spread and slippage",
+    "portfolio_DD": "unavailable, no sizing/capital constraints/mark-to-market portfolio equity model",
+    "coverage": "same 692 current exact-universe stocks as prior strategies; 52 missing and seven stale excluded; no remapping or repeat Fyers attempts",
+    "limitations": [
+      "present-day fixed mirrored universe gives survivorship bias",
+      "mixed Turso corporate-action adjustment consistency not independently verified",
+      "missing sessions/short history may distort rolling indicators; full200bar warmup enforced",
+      "zero costs and unlimited concurrent positions overstate implementability"
+    ]
+  },
+  "4": {
+    "strategy": "04 Dual MA Crossover, long only",
+    "EMA": "EMA20 alpha=2/21; EMA50 alpha=2/51; first-close seed, adjust=False; subsequent EMA=alpha*close+(1-alpha)*previousEMA",
+    "SMA200": "arithmetic average of 200 closes including current completed close; first entry eligible at index199",
+    "entry": "current EMA20>EMA50 AND prior EMA20<=prior EMA50 AND current close>SMA200; daily crossover EVENT, not merely bullish EMA state",
+    "exit": "current EMA20<EMA50 AND prior EMA20>=prior EMA50; no price/SMA exit condition added",
+    "execution": "completed daily close signals, next available symbol session open fills; one long per symbol; entry only if flat, exit only if held",
+    "initialization": "EMAs start equal at first close; no initial-state entry; full200bar entry warmup; calculations retain prior EMA state",
+    "terminal": "no forced liquidation; open positions separately marked; final-bar entry/exit signals pending and unfilled",
+    "costs": "gross returns, zero brokerage/taxes/spread/slippage",
+    "portfolio_DD": "unavailable: no sizing/capital constraints/mark-to-market portfolio model",
+    "coverage": "same 692 current exact-universe Turso stocks, 52 missing and seven stale excluded; no aliases substituted or new Fyers requests",
+    "limitations": [
+      "fixed present-day mirrored universe has survivorship bias",
+      "unverified mixed-source corporate-action adjustments",
+      "missing sessions may distort indicators; first-close EMA seeding influences early values",
+      "zero costs and unconstrained concurrent capital limit practical comparability"
+    ]
+  },
+  "5": {
+    "strategy": "05 Bollinger Band Reversion (20,2), long only",
+    "middle": "current-inclusive SMA(close,20)",
+    "std20": "population standard deviation of current-inclusive last20 closes, ddof=0: sqrt(sum((close_i-middle)^2)/20)",
+    "bands": "lower=middle-2*std20; upper=middle+2*std20 (upper informational)",
+    "entry": "close <= lower AND close > current-inclusive SMA(close,200). Close touch, not intraday low touch. Inclusive lower-band comparison; strict trend comparison.",
+    "exit": "close >= middle (inclusive return/touch to middle band)",
+    "warmup": "full200 observed bars required for entry; first eligible index199. BB requires20 observed closes.",
+    "execution": "completed daily close signals fill next available symbol session open; one long per symbol; flat entry versus held exit state; no added stop/risk filter",
+    "overlap": "if flat and entry true, schedule entry even if exit also true; if held evaluate exit; earliest post-entry exit is next open after entry-day close; after open exit reentry may be scheduled at that close for following open",
+    "terminal": "no forced liquidation; open positions marked separately; final close entry/exit signals pending and unfilled",
+    "costs": "gross returns; zero brokerage/taxes/spread/slippage",
+    "portfolio_DD": "unavailable, no sizing/capital constraints/portfolio mark-to-market equity model",
+    "coverage": "same692 current exact-universe Turso stocks; 52 missing and seven stale excluded; no aliases, no new Fyers requests",
+    "limitations": [
+      "fixed present-day mirrored universe causes survivorship bias",
+      "mixed-source Turso corporate-action adjustment consistency not independently verified",
+      "missing sessions can distort channel/SMA windows; full200bar entry warmup",
+      "zero costs and unconstrained concurrent capital limit practical conclusions"
+    ]
+  },
+  "6": {
+    "strategy": "06 MACD Trend (12,26,9), long only",
+    "EMAs": "EMA12 alpha2/13, EMA26 alpha2/27; first close seed, adjust=False; EMA=alpha*close+(1-alpha)*previousEMA",
+    "MACD": "EMA12-EMA26; firstMACD=0",
+    "signal": "EMA9 of MACD, alpha2/10=0.2, seeded with first MACD value; histogram=MACD-signal informational",
+    "entry": "current MACD>signal AND previous MACD<=previous signal AND close>current-inclusive SMA(close,50). Strict current inequalities, inclusive prior equality; actual crossover event, not all bullish states",
+    "exit": "current MACD<signal AND previous MACD>=previous signal; no exit trend condition",
+    "warmup": "full50 observed closes required for entry; first eligible index49. No synthetic firstbar crossover. First-close EMA seeds may influence short histories; no added burn-in beyond requested50bar warmup",
+    "execution": "completed daily close signal -> next available symbol session open; one long per symbol; entry only if flat, reverse-cross exit only if held; no extra stop/filters",
+    "terminal": "no forced liquidation; open positions separately marked; last-close entry/exit signals pending and unfilled",
+    "costs": "gross returns, zero brokerage/taxes/spread/slippage",
+    "portfolio_DD": "unavailable: no sizing/capital constraints/mark-to-market portfolio equity model",
+    "coverage": "same692 current exact-universe Turso stocks; 52 missing and seven stale excluded; no aliases or further Fyers requests",
+    "limitations": [
+      "present-day fixed universe survivorship bias",
+      "mixed Turso corporate-action adjustments not independently verified",
+      "missing sessions and first-close EMA convergence effects especially on short histories",
+      "zero costs and unconstrained concurrent capital limit practical implementability"
+    ]
+  },
+  "7": {
+    "strategy": "07 52-Week High Momentum",
+    "entry": "close>=0.90*highest(high,252), including current completed bar, AND close>current-inclusive SMA200; full252bar warmup; daily condition, not crossover",
+    "informational_5pct": "close>=0.95*high252 AND same SMA200; subgroup only, not baseline filter",
+    "entry_execution": "flat completed-close signal -> next available symbol session open; one long per symbol",
+    "trailing_initialization": "on entry fill initialize high-water H=entry_price; active stop=0.90*H immediately on entry session",
+    "trailing_update": "after each completed close while still held, H=max(H,close); next-session stop=.9*H; no high/intraday update and no retroactive current-close stop",
+    "execution_priority": "at open: if open<=prior active stop, exit at open (trail_gap); else queued prior-close SMA50 exit fills at open; only if still held then low<=active stop fills at stop (trail_touch). One exit max per symbol session. Entry-day stop may close that new trade; no same-session reentry. A close after exit can schedule next-session entry.",
+    "SMA_exit": "close<current-inclusive SMA50 schedules next-open exit; no same-close execution",
+    "chronology_note": "Queued SMA market exits must execute at session open BEFORE any later intraday low-stop touch. Choosing intraday touch first then retrospectively filling SMA at open would use future information. Gap-stop and queued SMA coincide as one open fill.",
+    "terminal": "no forced liquidation; final signals pending; open unrealized returns separate from closed metrics",
+    "costs": "gross zero brokerage/taxes/slippage/spread; no allocation/capital constraints/portfolioDD",
+    "coverage": "same692 current exact-universe Turso stocks;52 missing and7 stale excluded; no new Fyers calls or aliases",
+    "invalid_price_handling": "Two all-zero OHLC candles (BAJAJ-AUTO and NAM-INDIA,18Jun2026) excluded BEFORE indicators and execution. Pending fills use next valid observed session; no zero-price entries or stop fills. Earlier strategies left unchanged; their comparable data-quality limitation should be noted.",
+    "limitations": [
+      "fixed current universe survivorship bias",
+      "corporate-action adjustment consistency in mixed-source Turso data unverified",
+      "missing sessions distort rolling252-session approximation",
+      "daily OHLC cannot establish all intrabar paths; fixed prior-close stop avoids current-close lookahead",
+      "zero costs/unconstrained concurrent capital limit implementability"
+    ]
+  },
+  "1": {
+    "strategy": "01 Donchian / Turtle baseline long only",
+    "universe": "fixed existing Nifty Total Market mirrored 751 exact symbol+series; only symbols current through latest completed session included; no aliases substituted",
+    "entry": "signal close > max(high[t-20:t]); next available session open entry only if flat",
+    "exit": "signal close < min(low[t-10:t]); next available session open exit only if long",
+    "ATR_trailing_stop": false,
+    "one_position_per_symbol": true,
+    "entry_warmup": "20 preceding observed bars required; current bar excluded from both channels",
+    "end_of_data": "open positions marked separately, no forced liquidation; last-close entry orders pending, not counted as trades",
+    "costs": "gross returns, zero brokerage/taxes/slippage/spread; no sizing/capital constraints",
+    "max_drawdown": "portfolio maxDD unavailable: no sizing or mark-to-market portfolio model. Not replaced by misleading pooled trade drawdown.",
+    "calendar": "bars are observed per-symbol sessions; missing observations can distort channel windows",
+    "limitations": [
+      "fixed present-day universe causes survivorship bias",
+      "corporate-action and adjustment consistency in mixed Turso sources not independently verified",
+      "missing/invalid/stale symbols excluded; no history splices or renamed-symbol mappings",
+      "no next-session open after 6 Nov available; latest fresh signals are unfilled"
+    ]
+  }
+}

@@ -1,0 +1,167 @@
+"""Session supervision and additive analytics. No broker order endpoints."""
+import contextlib,fcntl,json,os,signal,subprocess,sys,time
+from datetime import datetime,date,timedelta,time as walltime
+from decimal import Decimal,ROUND_HALF_UP
+from pathlib import Path
+
+def cents(v):return int((Decimal(str(v))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+def safe_error(exc):
+ s=str(exc)
+ return s if s and len(s)<90 and all(c.isalnum() or c=='_' for c in s) else type(exc).__name__
+def active(e,t):return t.weekday()<5 and e.is_open(t)
+def clean(v):
+ import numpy as np
+ if isinstance(v,dict):return {k:clean(x) for k,x in v.items()}
+ if isinstance(v,(list,tuple)):return [clean(x) for x in v]
+ if isinstance(v,np.generic):return clean(v.item())
+ if isinstance(v,float) and not __import__('math').isfinite(v):return None
+ return v
+
+def checklist(e,strategy,f):
+ x=f.iloc[-1];c=x.close
+ # Conditions mirror the frozen indicator functions, not relaxed state substitutes.
+ try:
+  p=f.iloc[-2]
+  conditions={
+   1:lambda:{'close_above_prior20_high':c>f.high.shift().rolling(20).max().iloc[-1]},
+   2:lambda:{'prior_red':x.prior_direction==1,'current_green':x.direction==-1,'close_above_supertrend':c>x.supertrend},
+   3:lambda:{'close_above_sma200':c>x.sma200,'rsi14_below40':x.rsi14<40},
+   4:lambda:{'ema20_above_ema50':x.ema20>x.ema50,'prior_ema20_at_or_below_ema50':p.ema20<=p.ema50,'close_above_sma200':c>x.sma200},
+   5:lambda:{'close_at_or_below_lower_band':c<=x.bb_lower,'close_above_sma200':c>x.sma200},
+   6:lambda:{'macd_above_signal':x.macd>x.signal,'prior_macd_at_or_below_signal':p.macd<=p.signal,'close_above_sma50':c>x.sma50},
+   7:lambda:{'close_above_sma200':c>x.sma200,'within10pct_high252':c>=.9*x.high252}}
+  checks={k:bool(v) for k,v in conditions[strategy]().items()}
+ except (AttributeError,IndexError):checks={'entry_condition':bool(x.entry_condition)}
+ return {'data_current':True,'checks':checks,'all_filters_satisfied':bool(x.entry_condition),'rule':e.RULES[str(strategy)].get('entry',e.RULES[str(strategy)].get('long_entry')),'observed_values':clean(x.to_dict())}
+def plan(e,strategy,x):
+ r=e.RULES[str(strategy)]
+ return {'entry':'First fresh, verified in-session Fyers LTP after eligibility; not guaranteed open price','reference_close':float(x.close),'reference_bar':str(x.trade_date),'fixed_target':None,'exit_rule':r.get('exit',r.get('long_exit')),'stop':'10% below completed-close high-water from actual entry' if strategy==7 else 'No added fixed stop; frozen completed-candle exit rule','indicative_reference_trail':round(float(x.close)*.9,2) if strategy==7 else None,'indicative_not_order_price':True,'quantity':e.CFG['quantity'],'paper_only':True}
+
+def finance(e,db):
+ t=e.now();day=str(t.date());ps=db.positions();fs=db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy BETWEEN 1 AND 7',(e.NS,));cost=db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,));coh=db.query('SELECT * FROM paper_entry_cohorts WHERE namespace=?',(e.NS,))
+ # Integer-paise reporting; gross legacy fields remain untouched.
+ costs={r['fill_id']:r for r in cost};entrykeys={(p['strategy'],p['symbol'],p['entry_at']) for p in ps};cohorts={(r['strategy'],r['symbol'],r['entry_at']):r['cohort'] for r in coh}
+ rows=[];missing=[];stale=[]
+ for f in fs:
+  cr=costs.get(f['id']);entry=cr['entry_at'] if cr else (f['filled_at'] if f['side']=='BUY' else None)
+  rows.append({'strategy':f['strategy'],'cohort':cohorts.get((f['strategy'],f['symbol'],entry),'unavailable'),'gross':cents(f['realized_pnl']),'cost':cr['total_paise'] if cr else 0})
+ for p in ps:
+  if p['mark_price'] is None:missing.append(p['symbol']);continue
+  val=int(((Decimal(str(p['mark_price']))-Decimal(str(p['entry_price'])))*p['qty']*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+  rows.append({'strategy':p['strategy'],'cohort':cohorts.get((p['strategy'],p['symbol'],p['entry_at']),'unavailable'),'gross':val,'cost':0})
+  if not p['mark_at'] or (t-datetime.fromisoformat(p['mark_at'])).total_seconds()>e.CFG['quote_max_age_seconds']:stale.append(p['symbol'])
+ uncovered=sum(f['id'] not in costs for f in fs)
+ gross_realized=sum(cents(f['realized_pnl']) for f in fs);gross=sum(r['gross'] for r in rows);accrued=sum(r['total_paise'] for r in cost)
+ open_entry=sum(r['total_paise'] for r in cost if r['side']=='BUY' and (r['strategy'],r['symbol'],r['entry_at']) in entrykeys);closed_cost=accrued-open_entry
+ breakdown={}
+ for r in cost:
+  for k,v in json.loads(r['components_json']).items():
+   if k!='total':breakdown[k]=breakdown.get(k,0)+v
+ def groups(key):
+  out={}
+  for r in rows:
+   k=str(r[key]);a=out.setdefault(k,{'gross_paise':0,'accrued_cost_paise':0,'net_accrued_paise':0});a['gross_paise']+=r['gross'];a['accrued_cost_paise']+=r['cost'];a['net_accrued_paise']+=r['gross']-r['cost']
+  for p in ps:
+   if p['mark_price'] is None:
+    k=str(p['strategy']) if key=='strategy' else cohorts.get((p['strategy'],p['symbol'],p['entry_at']),'unavailable');a=out.setdefault(k,{'accrued_cost_paise':0});a.update(gross_paise=None,net_accrued_paise=None,valuation_incomplete=True)
+  if uncovered:
+   for r in out.values():r['net_accrued_paise']=None
+  return out
+ # A close-all scenario estimate, never accrued or booked; cap projected DP once per ISIN/day.
+ projected=0;projection_missing=[];today=[r for r in cost if r['day']==day];prior=sum(r['turnover_paise'] for r in today);priorbuy=sum(r['turnover_paise'] for r in today if r['side']=='BUY');debited={r['isin'] for r in db.query('SELECT isin FROM paper_dp_debits WHERE namespace=? AND day=?',(e.NS,day))}
+ for p in sorted(ps,key=lambda p:(p['symbol'],p['strategy'])):
+  isin=e.ISINS.get(p['symbol'])
+  if not isin or p['mark_price'] is None:projection_missing.append(p['symbol']);continue
+  dp=p['entry_at'][:10]<day and isin not in debited
+  f=db.call({'action':'estimate','price':p['mark_price'],'quantity':p['qty'],'side':'SELL','prior':prior,'priorBuy':priorbuy,'dp':dp});projected+=f['total'];prior+=cents(p['mark_price'])*p['qty']
+  if dp:debited.add(isin)
+ marked=sum(cents(p['mark_price'])*p['qty'] for p in ps if p['mark_price'] is not None);cashgross=sum(c['gross_cashflow_paise'] for c in cost)+marked;cashnet=sum(c['net_cashflow_paise'] for c in cost)+marked
+ policy=json.loads((e.ROOT/'charge_policy.json').read_text())
+ return {'namespace':e.NS,'as_of_IST':t.isoformat(),'day':day,'money_unit':'integer INR paise','estimated_not_actual_charges':True,'policy_version':policy['version'],'policy_current':policy['effective_from']<=day<=policy['valid_through'],'gross_realized_paise':gross_realized,'gross_unrealized_paise':None if missing else gross-gross_realized,'gross_total_paise':None if missing else gross,'accrued_cost_paise':accrued,'net_realized_paise':None if uncovered else gross_realized-closed_cost,'net_unrealized_accrued_paise':None if missing or uncovered else gross-gross_realized-open_entry,'net_total_accrued_paise':None if missing or uncovered else gross-accrued,'estimated_exit_cost_paise':None if projection_missing else projected,'net_after_estimated_exit_paise':None if missing or projection_missing or uncovered else gross-accrued-projected,'open_entry_cost_paise':open_entry,'charge_breakdown_paise':breakdown,'by_strategy':groups('strategy'),'by_entry_cohort':groups('cohort'),'fills_missing_cost_ledger':uncovered,'cost_coverage_complete':not uncovered,'ledger_reconciled':not(missing or uncovered) and cashgross==gross and cashnet==gross-accrued,'cashflow_net_paise':None if missing or uncovered else cashnet,'missing_marks':missing,'stale_mark_symbols':sorted(set(stale)),'valuation_is_live':active(e,t) and not(missing or stale),'funded_capital':None,'capital_return_pct':None,'mark_observations':[{'strategy':p['strategy'],'symbol':p['symbol'],'mark_at':p['mark_at'],'source':'last accepted fresh FYERS_QUOTES; not official closing price'} for p in ps]}
+
+def overlap(e,db):
+ r=db.query('SELECT MAX(bar_date) AS bar FROM paper_scan_batches WHERE namespace=?',(e.NS,));bar=r[0]['bar'] if r else None;groups={}
+ for x in db.query('SELECT symbol,strategy FROM paper_qualifier_states WHERE namespace=? AND bar_date=? AND qualified=1 ORDER BY symbol,strategy',(e.NS,bar)):
+  groups.setdefault(x['symbol'],[]).append(x['strategy'])
+ stocks=[{'symbol':s,'strategies':v,'count':len(v),'cohort':'single' if len(v)==1 else 'exactly_2' if len(v)==2 else 'exactly_3' if len(v)==3 else '4_plus'} for s,v in groups.items()]
+ return {'as_of_bar':bar,'stocks':stocks,'bucket_counts':{k:sum(x['cohort']==k for x in stocks) for k in ['single','exactly_2','exactly_3','4_plus']},'at_least_2':sum(x['count']>=2 for x in stocks),'at_least_3':sum(x['count']>=3 for x in stocks),'execution':'Independent virtual strategy holdings; not a combined funded portfolio. Entry attribution is immutable, never this latest cohort.'}
+
+def eod(e,db):
+ t=e.now();ss=e.session(t.date())
+ if t.weekday()>=5 or not ss or t.timetz().replace(tzinfo=None)<walltime(16):return {'status':'not_verified_weekday_eod','snapshot_written':False}
+ r=finance(e,db);prior=db.query('SELECT day,report_json FROM paper_eod WHERE namespace=? AND day<? ORDER BY day DESC LIMIT 1',(e.NS,str(t.date())))
+ expected=str(e.completed_day(t.replace(hour=0,minute=0,second=0,microsecond=0)));before=db.query('SELECT COUNT(*) AS n FROM paper_fills WHERE namespace=? AND substr(filled_at,1,10)<?',(e.NS,str(t.date())))[0]['n']
+ p=json.loads(prior[0]['report_json']) if prior else None
+ close=datetime.combine(t.date(),ss[1],tzinfo=e.IST);quality=[]
+ for x in r['mark_observations']:
+  qt=datetime.fromisoformat(x['mark_at']) if x['mark_at'] else None;distance=(close-qt).total_seconds() if qt else None;quality.append({**x,'seconds_before_session_close':distance,'near_close':bool(qt and qt.date()==t.date() and 0<=distance<=300)})
+ r['closing_mark_quality']=quality;r['closing_valuation_complete']=not r['missing_marks'] and all(x['near_close'] for x in quality)
+ known=bool(prior and prior[0]['day']==expected and p.get('closing_valuation_complete')) or (not prior and not before)
+ r['daily_baseline_day']=prior[0]['day'] if prior else None;r['daily_baseline_known']=known;r['daily_gross_paise']=None;r['daily_net_accrued_paise']=None
+ if known and r['closing_valuation_complete']:
+  for key,out in [('gross_total_paise','daily_gross_paise'),('net_total_accrued_paise','daily_net_accrued_paise')]:
+   if r[key] is not None and (p is None or p.get(key) is not None):r[out]=r[key]-(p[key] if p else 0)
+ r['official_close']=False;r['missing_eod_warning']='Last accepted in-session marks, potentially stale; never fabricated official close. Missing daily baseline means daily P&L unavailable.'
+ db.batch([('INSERT INTO paper_eod(namespace,day,as_of,report_json) VALUES(?,?,?,?) ON CONFLICT(namespace,day) DO UPDATE SET as_of=excluded.as_of,report_json=excluded.report_json',(e.NS,str(t.date()),t.isoformat(),e.js(r)))]);return r
+
+def weekly(e,db):
+ end=e.now().date();start=end-timedelta(days=end.weekday());rs=db.query('SELECT day,report_json FROM paper_eod WHERE namespace=? AND day>=? AND day<=? ORDER BY day',(e.NS,str(start),str(end)));values=[json.loads(x['report_json']) for x in rs];expected=[];d=start
+ while d<=end:
+  s=e.session(d)
+  if s is None:return {'status':'calendar_unverified','weekly_net_paise':None}
+  if d.weekday()<5 and s and (d<end or e.now().hour>=16):expected.append(str(d))
+  d+=timedelta(days=1)
+ complete=bool(values) and set(expected)=={x['day'] for x in rs} and all(x.get('daily_net_accrued_paise') is not None for x in values)
+ return {'week_start':str(start),'through':rs[-1]['day'] if rs else None,'requested_through':str(end),'unfinalized_today_excluded':str(end) not in expected,'expected_sessions':expected,'snapshot_days':[x['day'] for x in rs],'complete':complete,'weekly_gross_paise':sum(x['daily_gross_paise'] for x in values) if complete else None,'weekly_net_paise':sum(x['daily_net_accrued_paise'] for x in values) if complete else None,'definition':'Sum verified daily CHANGES, never sum cumulative snapshots; incomplete week/session coverage unavailable.'}
+
+def heartbeat(e,db,status,**detail):
+ detail['process_start']=(Path('/proc')/str(os.getpid())/'stat').read_text().split()[21]
+ db.batch([('INSERT INTO paper_monitor_health(namespace,pid,heartbeat_at,status,detail_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET pid=excluded.pid,heartbeat_at=excluded.heartbeat_at,status=excluded.status,detail_json=excluded.detail_json',(e.NS,os.getpid(),e.now().isoformat(),status,e.js(detail)))])
+def health(e,db):
+ rows=db.query('SELECT * FROM paper_monitor_health WHERE namespace=?',(e.NS,));r=rows[0] if rows else None
+ return {'paper_only':True,'automation_session_open':active(e,e.now()),'calendar_valid_through':e.CFG['calendar_valid_through'],'calendar_verified':e.session(e.now().date()) is not None,'heartbeat':r,'heartbeat_stale':bool(active(e,e.now()) and (not r or (e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds()>600)),'scheduler_required':True,'poll_seconds':e.CFG['poll_seconds'],'calendar_review_warning':(date.fromisoformat(e.CFG['calendar_valid_through'])-e.now().date()).days<=14,'policy_review_warning':(date.fromisoformat(json.loads((e.ROOT/'charge_policy.json').read_text())['valid_through'])-e.now().date()).days<=14}
+
+def ensure_monitor(e,db):
+ if not active(e,e.now()):return {'status':'market_closed_or_calendar_unverified','started':False}
+ with (e.ROOT/'monitor.lock').open('a+') as lock:
+  try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except BlockingIOError:
+   h=health(e,db);r=h.get('heartbeat');detail=json.loads(r['detail_json']) if r else {};pid=r['pid'] if r else 0
+   if h['heartbeat_stale'] and r and detail.get('process_start'):
+    try:
+     proc=Path('/proc')/str(pid);cmd=(proc/'cmdline').read_bytes().split(b'\0');start=(proc/'stat').read_text().split()[21]
+     owned=start==detail['process_start'] and str(e.ROOT/'engine.py').encode() in cmd and b'worker' in cmd and (proc/'cwd').resolve()==e.ROOT
+     if owned:os.kill(pid,signal.SIGTERM);return {'status':'stale_owned_worker_signalled','started':False,'restart':'next supervisor invocation','pid':pid}
+    except (OSError,ValueError,IndexError):pass
+   return {'status':'unhealthy_worker_needs_attention' if h['heartbeat_stale'] else 'already_running','started':False,**h}
+  # Lock is an OS lease; a stale PID alone never causes process termination or prevents restart.
+  with (e.ROOT/'logs/monitor-worker.log').open('a') as out:
+   p=subprocess.Popen([sys.executable,str(e.ROOT/'engine.py'),'worker'],stdout=out,stderr=out,start_new_session=True,cwd=e.ROOT,pass_fds=(lock.fileno(),),env={**os.environ,'PAPER_MONITOR_LOCK_FD':str(lock.fileno())})
+  return {'status':'starting','started':True,'pid':p.pid,'singleton_enforced_by_child':True}
+
+def worker(e,db,sleep=time.sleep,max_polls=None,api_factory=None):
+ if not active(e,e.now()):return {'status':'closed','polls':0}
+ fd=os.environ.get('PAPER_MONITOR_LOCK_FD')
+ if fd and os.fstat(int(fd)).st_ino!=(e.ROOT/'monitor.lock').stat().st_ino:raise RuntimeError('invalid_inherited_monitor_lease')
+ with (os.fdopen(int(fd),'a+') if fd else (e.ROOT/'monitor.lock').open('a+')) as lease:
+  try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except BlockingIOError:return {'status':'already_running','polls':0}
+  failures=0;polls=0;last_pnl=-1000;api=None;paused=False;factory=api_factory or e.MarketData
+  try:
+   while active(e,e.now()) and (max_polls is None or polls<max_polls):
+    start=time.monotonic();delay=e.CFG['poll_seconds']
+    with (e.ROOT/'engine.lock').open('a+') as lock:
+     try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+     except BlockingIOError:heartbeat(e,db,'waiting_for_engine_lock');sleep(delay);continue
+     try:
+      heartbeat(e,db,'polling');api=api or factory();r=e.monitor(db,api);polls+=1;failures=0
+      if time.monotonic()-last_pnl>=300:e.pnl(db);last_pnl=time.monotonic()
+      heartbeat(e,db,'healthy',polls=polls,last_result=r)
+     except Exception as ex:
+      reason=safe_error(ex);failures+=1;polls+=1;heartbeat(e,db,'backoff',error=reason,failures=failures)
+      if 'auth' in reason.lower() or 'token_refresh' in reason.lower():paused=True;heartbeat(e,db,'paused_auth',error=reason);return {'status':'paused_auth','polls':polls}
+      delay=min(300,30*2**min(failures,4))
+    sleep(max(0,delay-(time.monotonic()-start)))
+  finally:
+   if not paused:heartbeat(e,db,'stopped',polls=polls)
+  return {'status':'session_finished','polls':polls}
