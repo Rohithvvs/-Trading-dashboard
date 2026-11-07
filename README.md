@@ -108,3 +108,26 @@ New bounded endpoint: `GET /api/dashboard?view=history&symbol=RELIANCE-EQ` reads
 ### Production verification status — 7 Nov 2026 IST
 
 Existing paper-system Turso credentials were verified through the local server: all seven public API views passed read-only database roundtrips. Production connection root cause is **not verified**. The Vercel connector could list the repository-linked project, but project details, environment metadata and runtime logs returned **403 team-scope access denied** for its owning team. No production environment variables were changed and no credential values were exposed. An authorized team member must grant the connector access to the correct project/team, then inspect the Production server variables and redeploy if configuration changes are needed. A GitHub push/redeployment alone is not proof that the production database connection is fixed.
+
+## Isolated manual visibility test
+
+A user-requested **Dummy Test** is stored in the separate additive `paper_demo_trades` table, fixed namespace `paper_demo_v1`. It is **not** a row in `paper_positions`, `paper_fills`, `paper_signals`, watermarks or quote audits. The engine only reads its original tables, so demos cannot trigger quotes/orders/stops/marking and cannot affect real paper P&L, win rate, holding time, signals or the curve. No existing engine schema, rule or automation behavior is changed.
+
+The default dashboard displays a separately labeled manual-demo card and recent-test record. The entry price is explicitly user-supplied, **not a Fyers quote**. There is no fabricated current market price, quote timestamp, sparkline or realized/unrealized return. The card is excluded from the real open-position count and every scorecard statistic. Public read-only endpoint `GET /api/dashboard?view=demo` reads at most25 test records; it cannot create/update/delete any.
+
+Local administration (server-side credentials only; no secret command arguments):
+
+```bash
+# Read existing manual test records
+LOCAL_TURSO_ENV_FILE=/path/to/existing.env node scripts/manage-demo.mjs list
+# Only when explicitly requested: additive migration + atomic, idempotent one-row insertion
+LOCAL_TURSO_ENV_FILE=/path/to/existing.env node scripts/manage-demo.mjs insert-reliance --confirm-manual-test
+# Only AFTER a separate explicit cleanup request; not run automatically:
+LOCAL_TURSO_ENV_FILE=/path/to/existing.env node scripts/manage-demo.mjs delete-reliance --confirm-delete
+```
+
+Deterministic ID `dummy_reliance_manual_v1` prevents duplicate logical trades and preserves its original timestamp on retries. The administrative script is not imported by the public API. The migration creates only the new table; it does not alter/drop/reset existing data. SQLite tests use a private temporary database and verify mixed real/demo metric invariance, untouched engine tables, invalid-price/quantity rejection, idempotence and clear UI provenance. Removal, if requested later, is restricted to this exact demo ID/namespace/is_test flag.
+
+### Refresh correctness
+
+The former in-app Refresh could return the same actual `readAt` within the API’s20-second cache window. Manual refresh, initial load and five-minute automatic refresh now request validated `refresh=1`, bypassing that cache and executing fresh Turso SELECTs. Position/history and advanced-ledger refreshes do the same. Browser fetches use `cache: no-store`; normal API requests without the flag can still use the bounded20-second cache. The existing rate limiter applies before either path. Timestamps originate in the actual reader execution, never a frontend cosmetic update. A fresh database read still does **not** obtain new broker quotes or run a strategy scan.

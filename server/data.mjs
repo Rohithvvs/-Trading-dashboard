@@ -1,3 +1,4 @@
+import {DEMO_NAMESPACE,DEMO_SELECT} from './demo-read.mjs';
 import {createClient} from '@libsql/client/web';
 export const NAMESPACE='paper_v1';
 export const IST='Asia/Kolkata';
@@ -17,14 +18,15 @@ export function positionView(row,now=Date.now()){
 }
 export function publicRows(rows){return rows.map(row=>{const r={...row};if('reason' in r){const known=['daily_entry','observed_LTP_below_close_highwater_stop','market_closed_or_unverified','provider_quote_error','nonpositive_or_missing_price','missing_exchange_timestamp','stale_or_future_quote','quote_outside_verified_session','fresh'];r.reason=known.includes(r.reason)?r.reason:/^daily_exit:\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{8,40}$/.test(r.reason)?r.reason:'recorded_event';}if('status' in r&&!['pending','filled','ignored_state','ignored_stale_position','expired','closed','ok','failed','success','noop'].includes(r.status))r.status='recorded';if('kind' in r&&!['monitor','scan','bootstrap','probe','init','pnl','status'].includes(r.kind))r.kind='engine_run';if('source' in r)r.source=r.source==='FYERS_QUOTES'?'FYERS_QUOTES':'market_data';return r;});}
 export function parseOptions(query={}){
- const view=query.view??'overview';if(!['overview','fills','positions','signals','runs','quotes','history'].includes(view))throw new Error('BAD_REQUEST');
+ const view=query.view??'overview';if(!['overview','fills','positions','signals','runs','quotes','history','demo'].includes(view))throw new Error('BAD_REQUEST');
  const integer=(v,def,max)=>{const n=v===undefined?def:Number(v);if(!Number.isInteger(n)||n<1||n>max)throw new Error('BAD_REQUEST');return n;};
  const page=integer(query.page,1,10000),limit=integer(query.limit,25,100);
  const strategy=query.strategy===undefined||query.strategy===''?null:integer(query.strategy,1,7);
  const scope=query.scope??'all';if(!['all','today'].includes(scope))throw new Error('BAD_REQUEST');
  const symbol=query.symbol;if(view==='history'){if(typeof symbol!=='string'||!/^\b[A-Z0-9&_.-]{1,80}$/.test(symbol)||strategy!==null)throw new Error('BAD_REQUEST');}else if(symbol!==undefined)throw new Error('BAD_REQUEST');
- const allowed=new Set(['view','page','limit','strategy','scope','symbol']);if(Object.keys(query).some(k=>!allowed.has(k)))throw new Error('BAD_REQUEST');
- return {view,page,limit,strategy,scope,...(symbol?{symbol}:{})};
+ const refresh=query.refresh;if(refresh!==undefined&&refresh!=='1')throw new Error('BAD_REQUEST');
+ const allowed=new Set(['view','page','limit','strategy','scope','symbol','refresh']);if(Object.keys(query).some(k=>!allowed.has(k)))throw new Error('BAD_REQUEST');
+ return {view,page,limit,strategy,scope,...(symbol?{symbol}:{}),...(refresh==='1'?{forceRefresh:true}:{})};
 }
 let client;
 export function readConfig(env=process.env){
@@ -49,6 +51,7 @@ export async function readDashboard(options,execute,now=new Date()){
  const run=execute??(async(sql,args)=>(await getClient().execute({sql,args})).rows);
  const select=(sql,args=[])=>{if(!/^SELECT\s/i.test(sql))throw new Error('READ_ONLY_GUARD');return run(sql,args);};
  const day=istDay(now),ns=[NAMESPACE];
+ if(options.view==='demo'){if(options.strategy!==null)throw new Error('BAD_REQUEST');const rows=await select(DEMO_SELECT,[DEMO_NAMESPACE]);return {readAt:now.toISOString(),namespace:NAMESPACE,demoNamespace:DEMO_NAMESPACE,excludedFromPerformance:true,rows};}
  if(options.view==='history'){
   const raw=await select('SELECT quote_at,price FROM paper_quote_audit WHERE namespace=? AND symbol=? AND accepted=1 AND price>0 AND quote_at IS NOT NULL ORDER BY quote_at DESC,id DESC LIMIT 60',[NAMESPACE,options.symbol]);
   const seen=new Set();const rows=raw.filter(r=>{if(seen.has(r.quote_at))return false;seen.add(r.quote_at);return numeric(r.price)>0;}).reverse();
@@ -68,7 +71,7 @@ export async function readDashboard(options,execute,now=new Date()){
   const [counts,rows]=await Promise.all([select(`SELECT COUNT(*) AS total FROM ${d.table} WHERE ${where}`,args),select(`SELECT ${d.fields} FROM ${d.table} WHERE ${where} ORDER BY ${d.order} LIMIT ? OFFSET ?`,[...args,options.limit,(options.page-1)*options.limit])]);
   return {readAt:now.toISOString(),namespace:NAMESPACE,page:options.page,limit:options.limit,total:Number(counts[0].total),rows:options.view==='positions'?rows.map(r=>positionView(r,now.getTime())):publicRows(rows)};
  }
- const [totals,positions,pnl,performance,recentFills,recentSignals,lastRuns,audit,coverage,closedStats]=await Promise.all([
+ const [totals,positions,pnl,performance,recentFills,recentSignals,lastRuns,audit,coverage,closedStats,demoTrades]=await Promise.all([
   select("SELECT COUNT(*) AS filled_orders,COALESCE(SUM(realized_pnl),0) AS realized,COALESCE(SUM(CASE WHEN side='SELL' THEN 1 ELSE 0 END),0) AS closed_trades,COALESCE(SUM(CASE WHEN date(filled_at,'+5 hours','+30 minutes')=? THEN 1 ELSE 0 END),0) AS today_fills FROM paper_fills WHERE namespace=?",[day,NAMESPACE]),
   select('SELECT strategy,symbol,qty,entry_price,entry_at,high_water,mark_price,mark_at,updated_at FROM paper_positions WHERE namespace=? AND qty>0 ORDER BY strategy,symbol LIMIT 5000',ns),
   select('SELECT day,as_of,report_json FROM paper_pnl WHERE namespace=? ORDER BY day DESC LIMIT 366',ns),
@@ -78,10 +81,11 @@ export async function readDashboard(options,execute,now=new Date()){
   select('SELECT kind,at,status FROM paper_runs WHERE namespace=? ORDER BY at DESC,id DESC LIMIT 10',ns),
   select('SELECT symbol,observed_at,quote_at,price,accepted,reason,source FROM paper_quote_audit WHERE namespace=? ORDER BY observed_at DESC,id DESC LIMIT 8',ns),
   select("SELECT (SELECT COUNT(*) FROM paper_watermarks WHERE namespace=?) AS watermarks,(SELECT COUNT(*) FROM paper_data_audit WHERE namespace=?) AS excluded_bars,(SELECT COUNT(*) FROM paper_signals WHERE namespace=? AND status='pending') AS pending_signals,(SELECT COUNT(*) FROM paper_signals WHERE namespace=? AND date(created_at,'+5 hours','+30 minutes')=?) AS signals_today",[NAMESPACE,NAMESPACE,NAMESPACE,NAMESPACE,day]),
-  select("SELECT COUNT(*) AS closed_count,SUM(CASE WHEN s.realized_pnl>0 THEN 1 ELSE 0 END) AS wins,AVG(julianday(s.filled_at)-julianday((SELECT b.filled_at FROM paper_fills b WHERE b.namespace=s.namespace AND b.strategy=s.strategy AND b.symbol=s.symbol AND b.side='BUY' AND b.id<s.id ORDER BY b.id DESC LIMIT 1))) AS average_hold_days,COUNT((SELECT b.id FROM paper_fills b WHERE b.namespace=s.namespace AND b.strategy=s.strategy AND b.symbol=s.symbol AND b.side='BUY' AND b.id<s.id ORDER BY b.id DESC LIMIT 1)) AS matched_closures FROM paper_fills s WHERE s.namespace=? AND s.side='SELL'",ns)
+  select("SELECT COUNT(*) AS closed_count,SUM(CASE WHEN s.realized_pnl>0 THEN 1 ELSE 0 END) AS wins,AVG(julianday(s.filled_at)-julianday((SELECT b.filled_at FROM paper_fills b WHERE b.namespace=s.namespace AND b.strategy=s.strategy AND b.symbol=s.symbol AND b.side='BUY' AND b.id<s.id ORDER BY b.id DESC LIMIT 1))) AS average_hold_days,COUNT((SELECT b.id FROM paper_fills b WHERE b.namespace=s.namespace AND b.strategy=s.strategy AND b.symbol=s.symbol AND b.side='BUY' AND b.id<s.id ORDER BY b.id DESC LIMIT 1)) AS matched_closures FROM paper_fills s WHERE s.namespace=? AND s.side='SELL'",ns),
+  select(DEMO_SELECT,[DEMO_NAMESPACE])
  ]);
  const pos=positions.map(r=>positionView(r,now.getTime()));const unrealized=pos.some(r=>r.unrealized_pnl===null)?null:pos.reduce((a,r)=>a+r.unrealized_pnl,0);
  const reports=pnl.map(r=>{let d={};try{d=JSON.parse(r.report_json);}catch{/* Corrupt snapshots stay unavailable. */}return {day:r.day,asOf:r.as_of,daily:numeric(d.daily_mark_to_market_pnl_INR),total:numeric(d.latest_known_total_pnl_INR),realizedClosuresToday:numeric(d.realized_on_closures_today_INR),valuationIsLive:d.valuation_is_live===true,missingDailyBasis:d.missing_daily_basis_symbols??[]};});
  const latest=reports[0]??null,today=latest?.day===day?latest:null,realized=numeric(totals[0].realized);
- return {readAt:now.toISOString(),namespace:NAMESPACE,day,market:marketState(now),totals:{filledOrders:Number(totals[0].filled_orders),closedTrades:Number(totals[0].closed_trades),todayFills:Number(totals[0].today_fills),openPositions:pos.length,realized,unrealized,total:unrealized===null?null:realized+unrealized,daily:today?.daily??null,staleMarks:pos.filter(r=>r.mark_stale).length,missingMarks:pos.filter(r=>r.unrealized_pnl===null).length,pendingSignals:Number(coverage[0].pending_signals)},closedStats:{count:Number(closedStats[0]?.closed_count??0),winRate:Number(closedStats[0]?.closed_count)>0?Number(closedStats[0].wins)/Number(closedStats[0].closed_count)*100:null,averageHoldDays:numeric(closedStats[0]?.average_hold_days),matchedClosures:Number(closedStats[0]?.matched_closures??0)},signalsToday:Number(coverage[0].signals_today??0),positions:pos.slice(0,20),performance:Array.from({length:7},(_,i)=>{const row=performance.find(r=>Number(r.strategy)===i+1);const closed=Number(row?.closed_trades??0);return {strategy:i+1,closedTrades:closed,winRate:closed?Number(row.wins)/closed*100:null,realized:numeric(row?.realized??0),openPositions:pos.filter(r=>Number(r.strategy)===i+1).length};}),dailyHistory:reports.reverse(),latestSnapshot:latest,recentFills:publicRows(recentFills),recentSignals:publicRows(recentSignals),lastRuns:publicRows(lastRuns),quoteAudit:publicRows(audit),coverage:coverage[0]};
+ return {readAt:now.toISOString(),namespace:NAMESPACE,day,market:marketState(now),totals:{filledOrders:Number(totals[0].filled_orders),closedTrades:Number(totals[0].closed_trades),todayFills:Number(totals[0].today_fills),openPositions:pos.length,realized,unrealized,total:unrealized===null?null:realized+unrealized,daily:today?.daily??null,staleMarks:pos.filter(r=>r.mark_stale).length,missingMarks:pos.filter(r=>r.unrealized_pnl===null).length,pendingSignals:Number(coverage[0].pending_signals)},closedStats:{count:Number(closedStats[0]?.closed_count??0),winRate:Number(closedStats[0]?.closed_count)>0?Number(closedStats[0].wins)/Number(closedStats[0].closed_count)*100:null,averageHoldDays:numeric(closedStats[0]?.average_hold_days),matchedClosures:Number(closedStats[0]?.matched_closures??0)},signalsToday:Number(coverage[0].signals_today??0),demoTrades,positions:pos.slice(0,20),performance:Array.from({length:7},(_,i)=>{const row=performance.find(r=>Number(r.strategy)===i+1);const closed=Number(row?.closed_trades??0);return {strategy:i+1,closedTrades:closed,winRate:closed?Number(row.wins)/closed*100:null,realized:numeric(row?.realized??0),openPositions:pos.filter(r=>Number(r.strategy)===i+1).length};}),dailyHistory:reports.reverse(),latestSnapshot:latest,recentFills:publicRows(recentFills),recentSignals:publicRows(recentSignals),lastRuns:publicRows(lastRuns),quoteAudit:publicRows(audit),coverage:coverage[0]};
 }

@@ -26,3 +26,9 @@ describe('HTTP boundary',()=>{
 
 it('redacts arbitrary database error text in public reason/status fields',()=>{expect(publicRows([{reason:'Bearer token=secret',status:'secret',kind:'private',source:'private'}])[0]).toEqual({reason:'recorded_event',status:'recorded',kind:'engine_run',source:'market_data'});});
 it('excludes closed qty-zero positions in overview and paginated queries',async()=>{const f=executeFixture();await readDashboard(parseOptions({view:'positions'}),f.execute,now);expect(f.calls.every(c=>c.sql.includes('qty>0'))).toBe(true);});
+it('explicit refresh bypasses cached data by executing the reader again, without inventing a new timestamp',async()=>{
+ let reads=0;const reader=vi.fn(async()=>({readAt:`fixture-read-${++reads}`}));const h=createHandler(reader);const query={view:'quotes',page:'991'};
+ const first=response();await h(request(query),first);const cached=response();await h(request(query),cached);expect(reader).toHaveBeenCalledTimes(1);expect(cached.body.readAt).toBe(first.body.readAt);
+ const fresh=response();await h(request({...query,refresh:'1'}),fresh);expect(reader).toHaveBeenCalledTimes(2);expect(fresh.body.readAt).toBe('fixture-read-2');expect(fresh.body.cacheAgeSeconds).toBe(0);expect(reader.mock.calls[1][0]).not.toHaveProperty('forceRefresh');
+});
+it('rejects unbounded/invalid refresh controls',()=>{for(const refresh of ['true','0',['1'],'any'])expect(()=>parseOptions({refresh})).toThrow('BAD_REQUEST');});

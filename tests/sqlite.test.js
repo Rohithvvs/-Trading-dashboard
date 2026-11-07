@@ -1,8 +1,8 @@
 // @vitest-environment node
-// Isolated in-memory fixture database only. No environment credentials or production writes.
-import {readFileSync} from 'node:fs';import {createClient} from '@libsql/client';import {afterEach,it,expect} from 'vitest';import {readDashboard,parseOptions} from '../server/data.mjs';
-const clients=[];afterEach(()=>clients.splice(0).forEach(c=>c.close()));
-async function fixture(){const db=createClient({url:'file::memory:'});clients.push(db);await db.executeMultiple(readFileSync(process.cwd()+'/tests/paper-schema.sql','utf8'));return db;}
+// Isolated temporary fixture database only. No environment credentials or production writes.
+import {readFileSync,mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createClient} from '@libsql/client';import {afterEach,it,expect} from 'vitest';import {readDashboard,parseOptions} from '../server/data.mjs';
+const clients=[];afterEach(()=>clients.splice(0).forEach(({db,dir})=>{db.close();rmSync(dir,{recursive:true,force:true});}));
+async function fixture(){const dir=mkdtempSync(join(tmpdir(),'atlas-sqlite-test-'));const db=createClient({url:'file:'+join(dir,'isolated.db')});clients.push({db,dir});await db.executeMultiple(readFileSync(process.cwd()+'/tests/paper-schema.sql','utf8'));await db.executeMultiple(readFileSync(process.cwd()+'/server/demo-schema.sql','utf8'));return db;}
 const now=new Date('2026-11-07T04:30:00Z');const run=db=>async(sql,args)=>(await db.execute({sql,args})).rows;
 it('calculates real SQL closed win rate, matched average holding days and total P&L without summing daily snapshots',async()=>{
  const db=await fixture();
@@ -15,3 +15,16 @@ it('history reads only accepted positive quotes, binds symbol/namespace and dedu
  const db=await fixture();for(const[p,at,accepted,ns]of [[55,'09:59:00',1,'paper_v1'],[59,'10:00:00',1,'paper_v1'],[60,'10:00:00',1,'paper_v1'],[9999,'10:01:00',0,'paper_v1'],[8888,'10:02:00',1,'other']])await db.execute({sql:'INSERT INTO paper_quote_audit(namespace,symbol,observed_at,quote_at,price,accepted,reason) VALUES(?,?,?,?,?,?,?)',args:[ns,'FIXTURE-EQ','2026-11-07T'+at+'+05:30','2026-11-07T'+at+'+05:30',p,accepted,'fresh']});const d=await readDashboard(parseOptions({view:'history',symbol:'FIXTURE-EQ'}),run(db),now);expect(d.rows.map(r=>r.price)).toEqual([55,60]);expect(d.namespace).toBe('paper_v1');
 });
 it('omits unmatched exits from holding average rather than inventing an entry timestamp',async()=>{const db=await fixture();await db.execute("INSERT INTO paper_fills(namespace,signal_id,strategy,symbol,side,qty,price,quote_at,filled_at,reason,realized_pnl,cashflow) VALUES('paper_v1','unmatched',1,'FIXTURE-EQ','SELL',1,100,'2026-11-07T10:00:00+05:30','2026-11-07T10:00:00+05:30','recorded_event',5,100)");const d=await readDashboard(parseOptions(),run(db),now);expect(d.closedStats).toEqual({count:1,winRate:100,averageHoldDays:null,matchedClosures:0});});
+
+it('stores exactly one idempotent demo and leaves engine ledger/positions/signals/quotes/watermarks untouched',async()=>{
+ const {insertManualDemo}=await import('../server/demo.mjs');const db=await fixture();const at='2026-11-07T11:40:00+05:30';const first=await insertManualDemo(db,at);const second=await insertManualDemo(db,'2026-11-08T11:40:00+05:30');expect(first.created).toBe(true);expect(second.created).toBe(false);expect(second.row.entry_at).toBe(at);
+ for(const table of ['paper_fills','paper_positions','paper_signals','paper_quote_audit','paper_watermarks'])expect((await db.execute(`SELECT COUNT(*) AS n FROM ${table}`)).rows[0].n).toBe(0);
+ const real=await readDashboard(parseOptions(),run(db),now);expect(real.totals).toMatchObject({filledOrders:0,closedTrades:0,openPositions:0,total:0,realized:0,unrealized:0,pendingSignals:0});expect(real.closedStats).toMatchObject({count:0,winRate:null,averageHoldDays:null});expect(real.signalsToday).toBe(0);expect(real.demoTrades).toHaveLength(1);expect(real.demoTrades[0]).toMatchObject({strategy_label:'Dummy Test',is_test:1,entry_price:2500,status:'OPEN',price_source:'MANUAL_TEST_NOT_LIVE'});
+ const d=await readDashboard(parseOptions({view:'demo'}),run(db),now);expect(d.excludedFromPerformance).toBe(true);expect(d.rows).toHaveLength(1);expect(d.rows[0]).not.toHaveProperty('quote_at');
+});
+it('rejects invalid/zero manual prices and quantity without weakening real ledger constraints',async()=>{
+ const {validateDemo,insertManualDemo}=await import('../server/demo.mjs');const db=await fixture();const {row}=await insertManualDemo(db);expect(()=>validateDemo({...row,entry_price:0})).toThrow('INVALID_MANUAL_DEMO');expect(()=>validateDemo({...row,qty:0})).toThrow('INVALID_MANUAL_DEMO');expect(()=>validateDemo({...row,strategy_label:'MACD Trend'})).toThrow('INVALID_MANUAL_DEMO');await expect(db.execute("UPDATE paper_demo_trades SET entry_price=0")).rejects.toThrow();expect((await db.execute('SELECT COUNT(*) AS n FROM paper_demo_trades')).rows[0].n).toBe(1);
+});
+it('mixed real plus demo retains actual real P&L and win/holding statistics',async()=>{
+ const {insertManualDemo}=await import('../server/demo.mjs');const db=await fixture();await db.execute("INSERT INTO paper_positions VALUES('paper_v1',1,'REALFIXTURE-EQ',1,100,'2026-11-06T10:00:00+05:30',120,120,'2026-11-07T10:00:00+05:30','2026-11-07T10:00:00+05:30')");const before=await readDashboard(parseOptions(),run(db),now);await insertManualDemo(db);const after=await readDashboard(parseOptions(),run(db),now);expect(after.totals).toEqual(before.totals);expect(after.closedStats).toEqual(before.closedStats);expect(after.performance).toEqual(before.performance);expect(after.positions).toEqual(before.positions);expect(after.dailyHistory).toEqual(before.dailyHistory);expect(after.totals.unrealized).toBe(20);expect(after.demoTrades).toHaveLength(1);
+});

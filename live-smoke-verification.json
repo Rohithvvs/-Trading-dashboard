@@ -29,7 +29,7 @@
     },
     "latestSnapshot": {
       "day": "2026-11-07",
-      "asOf": "2026-11-07T11:06:13.988965+05:30",
+      "asOf": "2026-11-07T11:43:44.825215+05:30",
       "daily": 0,
       "total": 0,
       "realizedClosuresToday": 0,
@@ -50,42 +50,42 @@
       "status": 200,
       "rows": null,
       "total": null,
-      "readAt": "2026-11-07T05:38:20.550Z"
+      "readAt": "2026-11-07T06:16:17.649Z"
     },
     {
       "view": "fills",
       "status": 200,
       "rows": 0,
       "total": 0,
-      "readAt": "2026-11-07T05:38:21.876Z"
+      "readAt": "2026-11-07T06:16:18.015Z"
     },
     {
       "view": "positions",
       "status": 200,
       "rows": 0,
       "total": 0,
-      "readAt": "2026-11-07T05:38:22.142Z"
+      "readAt": "2026-11-07T06:16:18.268Z"
     },
     {
       "view": "signals",
       "status": 200,
       "rows": 0,
       "total": 0,
-      "readAt": "2026-11-07T05:38:22.410Z"
+      "readAt": "2026-11-07T06:16:18.519Z"
     },
     {
       "view": "runs",
       "status": 200,
       "rows": 25,
-      "total": 28,
-      "readAt": "2026-11-07T05:38:22.971Z"
+      "total": 36,
+      "readAt": "2026-11-07T06:16:18.769Z"
     },
     {
       "view": "quotes",
       "status": 200,
-      "rows": 2,
-      "total": 2,
-      "readAt": "2026-11-07T05:38:23.238Z"
+      "rows": 3,
+      "total": 3,
+      "readAt": "2026-11-07T06:16:19.020Z"
     },
     {
       "view": "history",
