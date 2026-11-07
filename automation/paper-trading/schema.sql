@@ -34,3 +34,7 @@ CREATE TABLE IF NOT EXISTS paper_history_gap_checks(namespace TEXT NOT NULL,symb
 CREATE TABLE IF NOT EXISTS paper_input_policies(version TEXT PRIMARY KEY,policy_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS paper_input_evidence(version TEXT PRIMARY KEY,policy_version TEXT NOT NULL,evidence_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS paper_entry_input_proofs(namespace TEXT NOT NULL,signal_id TEXT NOT NULL,policy_version TEXT NOT NULL,bar_date TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(namespace,signal_id));
+
+-- Durable allowlisted paper-event audit and local session guardian.
+CREATE TABLE IF NOT EXISTS paper_events(namespace TEXT NOT NULL,event_id TEXT NOT NULL,run_id TEXT NOT NULL,session_day TEXT NOT NULL,source_at TEXT NOT NULL,recorded_at TEXT NOT NULL,event_type TEXT NOT NULL,severity TEXT NOT NULL,outcome TEXT NOT NULL,strategy INTEGER,symbol TEXT,bar_date TEXT,signal_id TEXT,policy_version TEXT,input_policy_version TEXT,data_json TEXT NOT NULL,persisted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00','now')),PRIMARY KEY(namespace,event_id));CREATE INDEX IF NOT EXISTS paper_events_session ON paper_events(namespace,session_day,recorded_at,event_id);CREATE INDEX IF NOT EXISTS paper_events_run ON paper_events(namespace,run_id);
+CREATE TABLE IF NOT EXISTS paper_guardian_health(namespace TEXT PRIMARY KEY,pid INTEGER NOT NULL,process_start TEXT NOT NULL,session_day TEXT NOT NULL,heartbeat_at TEXT NOT NULL,status TEXT NOT NULL);

@@ -86,9 +86,9 @@
   "automatic_sunday_execution": false,
   "calendar_and_policy_valid_through": "2026-12-31",
   "live_broker_orders": 0,
-  "installed_engine_tests": 68,
-  "source_package_engine_tests": 68,
-  "dashboard_tests": 78,
+  "installed_engine_tests": 135,
+  "source_package_engine_tests": 135,
+  "dashboard_tests": 111,
   "lint": "PASS",
   "build": "PASS",
   "secret_scan": {
@@ -102,5 +102,40 @@
   "fyers_market_session_probe_performed": false,
   "new_durable_routines_saved": true,
   "scheduling_confirmed_by_parent_IST": "2026-11-07T12:52:00+05:30",
-  "future_scheduled_session_execution_verified": false
+  "future_scheduled_session_execution_verified": false,
+  "monitoring_logging_release": {
+    "verified_at_IST": "2026-11-07T15:28:53.015491+05:30",
+    "worker_target_seconds": 30,
+    "guardian_target_seconds": 60,
+    "native_supervisor_minimum_minutes": 5,
+    "monitoring_guardian_commands_saved_by_parent": false,
+    "next_trading_day_observation_completed": false,
+    "source_and_runtime_tests": 135,
+    "audit_tables": [
+      "paper_events",
+      "paper_guardian_health"
+    ],
+    "production_baseline_unchanged": {
+      "paper_signals": 0,
+      "paper_fills": 0,
+      "paper_positions": 0,
+      "paper_eod": 0,
+      "paper_watermarks": 4844,
+      "paper_fill_costs": 0,
+      "watermark_dates": [
+        {
+          "first": "2026-11-06",
+          "last": "2026-11-06"
+        }
+      ],
+      "demo": 1
+    },
+    "saturday_ensure_session": {
+      "status": "closed",
+      "started": false
+    },
+    "saturday_export_events": 3,
+    "pending_spool_files": 0,
+    "no_market_session_proof": true
+  }
 }

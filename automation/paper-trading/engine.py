@@ -10,6 +10,8 @@ import requests
 import automation as au
 import prefilter as pf
 import session_inputs as si
+import audit as al
+import guardian as gd
 import history_repair as hr
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
@@ -103,7 +105,11 @@ class MarketData:
  def quotes(self,symbols):
   out={}
   for i in range(0,len(symbols),50):
-   d=self.get('quotes',{'symbols':','.join('NSE:'+s for s in symbols[i:i+50])})
+   batch_at=now();clock=time.monotonic();batch_id=al.run_id()+':'+str(i//50);al.note('quote_batch_request',batch_id=batch_id,symbols=symbols[i:i+50],request_started_at=batch_at,symbols_count=len(symbols[i:i+50]))
+   try:d=self.get('quotes',{'symbols':','.join('NSE:'+s for s in symbols[i:i+50])})
+   except Exception as ex:
+    al.note('quote_batch_failed',outcome='failed',severity='ERROR',error_code=type(ex).__name__,duration_ms=round((time.monotonic()-clock)*1000));raise
+   al.note('quote_batch_response',batch_id=batch_id,request_started_at=batch_at,response_received_at=now(),duration_ms=round((time.monotonic()-clock)*1000),symbols_count=len(symbols[i:i+50]))
    for x in d.get('d',[]):
     v=x.get('v') or {};sym=(x.get('n') or v.get('symbol') or '').replace('NSE:','');tt=v.get('tt'); stamp=None
     try:
@@ -132,7 +138,7 @@ def audit_quotes(db,quotes,t):
   ok,why=valid_quote(q,t);rows.append(('INSERT INTO paper_quote_audit(namespace,symbol,observed_at,quote_at,price,accepted,reason) VALUES(?,?,?,?,?,?,?)',(NS,sym,t.isoformat(),q.get('quote_at'),q.get('price'),int(ok),why)))
  db.batch(rows)
 def stable_id(*parts):return hashlib.sha256('|'.join(map(str,parts)).encode()).hexdigest()
-def fill(db,s,q,t):
+def _fill(db,s,q,t):
  ok,why=valid_quote(q,t)
  if not ok:return {'filled':False,'reason':why}
  if s['eligible_date']>t.date().isoformat():return {'filled':False,'reason':'not_yet_eligible'}
@@ -141,8 +147,16 @@ def fill(db,s,q,t):
   eligible=date.fromisoformat(s['eligible_date'])
   if eligible<t.date():
    db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);return {'filled':False,'reason':'expired_entry_signal'}
- r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':CFG['quantity'],'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r);return r
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':CFG['quantity'],'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r);return r
 STRATEGY_SOURCES={2:'02_supertrend/2026-11-07_run/run_strategy2.py',3:'03_rsi_pullback/2026-11-07_run/run_strategy3.py',4:'04_dual_ma/2026-11-07_run/run_strategy4.py',5:'05_bollinger_reversion/2026-11-07_run/run_strategy5.py',6:'06_macd_trend/2026-11-07_run/run_strategy6.py',7:'07_52week_momentum/2026-11-07_run/run_strategy7.py'}
+def fill(db,s,q,t):
+ e=sys.modules[__name__];began=now()
+ with al.scope(e,db,'paper_order'):
+  al.emit(e,db,'paper_order_attempt',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),bar_date=s.get('bar_date'),side=s.get('side'),price=q.get('price') if q else None,quote_at=q.get('quote_at') if q else None)
+  r=_fill(db,s,q,t+max(now()-began,timedelta(0)))
+  al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))))
+  return r
+
 def indicator(strategy,g):
  if strategy==1:
   f=g.copy();f['entry_condition']=f.close>f.high.shift().rolling(20).max();f['exit_condition']=f.close<f.low.shift().rolling(10).min();return f
@@ -178,16 +192,18 @@ def read_history(db,symbols,target):
  for i in range(0,len(symbols),25):
   sy=symbols[i:i+25];rows+=db.query('SELECT symbol,trade_date,open,high,low,close,volume FROM daily_ohlcv WHERE symbol IN ('+','.join('?'*len(sy))+') AND trade_date<=? ORDER BY symbol,trade_date',sy+[str(target)])
  return pd.DataFrame(rows)
-def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
+def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  t=now()
  if not bootstrap and not snapshot_only and (t.weekday()>=5 or not session(t.date())):return {'status':'not_verified_weekday_scan','signals_queued':0}
  target=completed_day(t);positions=db.positions();syms=sorted(set(universe())|{p['symbol'] for p in positions})
  existing=db.query('SELECT strategy,symbol,bar_date FROM paper_watermarks WHERE namespace=?',(NS,))
  if bootstrap and existing and not snapshot_only:return {'status':'already_bootstrapped','signals_queued':0,'no_backlog_fills':True}
+ if do_sync:al.emit(sys.modules[__name__],db,'sync_started',target_completed_bar=str(target),symbols_count=len(syms))
  sync_report=sync(db,api,target,syms) if do_sync else None
  try:benchmark=pf.benchmark(sys.modules[__name__],db,target,api,do_sync);benchmark_error=None
  except RuntimeError:benchmark=pd.DataFrame();benchmark_error="benchmark_sync_unavailable"
  repair_report=hr.repair(sys.modules[__name__],db,api,target) if do_sync and len(benchmark)>0 else None
+ if do_sync:al.emit(sys.modules[__name__],db,'sync_completed',target_completed_bar=str(target),symbols_count=len(syms))
  raw=read_history(db,syms,target);assert len(raw)>0
  raw,input_details,input_audit=si.filter_history(raw,benchmark)
  gates={}
@@ -200,17 +216,21 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
    if evidence['symbol'] in gates:gates[evidence['symbol']].update(provider_absent_sessions=evidence['absent'],provider_rejected_sessions=evidence['rejected'])
  for sym in syms:
   if sym not in gates:gates[sym]=pf.evaluate(pd.DataFrame(),benchmark,target)
+ audit_events=[]
+ for sym,r in gates.items():audit_events.append(al.event(sys.modules[__name__],'prefilter_decision',outcome=r['status'],symbol=sym,bar_date=str(target),**{k:v for k,v in r.items() if k not in ['status','symbol','bar_date']},excluded_rows=input_details.get(sym,{}).get('excluded_rows',0)))
  valid=(raw[['open','high','low','close']]>0).all(axis=1)&np.isfinite(raw[['open','high','low','close']]).all(axis=1)&(raw.high>=raw[['open','close','low']].max(axis=1))&(raw.low<=raw[['open','close','high']].min(axis=1))
  stm=[('INSERT INTO paper_prefilter_states(namespace,bar_date,symbol,policy_version,status,metrics_json,observed_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,symbol,policy_version) DO UPDATE SET status=excluded.status,metrics_json=excluded.metrics_json,observed_at=excluded.observed_at',(NS,str(target),sym,pf.POLICY['version'],r['status'],js(r),t.isoformat())) for sym,r in gates.items()]
  stm +=[('INSERT OR IGNORE INTO paper_data_audit(namespace,symbol,bar_date,reason,observed_at) VALUES(?,?,?,?,?)',(NS,x.symbol,x.trade_date,'nonpositive_nonfinite_or_inconsistent_OHLC',t.isoformat())) for x in raw[~valid].itertuples(index=False)]
  for row in json.loads((ROOT/'prefilter_exclusions.json').read_text()):
   r={'status':'UNAVAILABLE','reasons':[row['reason']],'audit_excluded':True,'policy_version':pf.POLICY['version']}
+  audit_events.append(al.event(sys.modules[__name__],'prefilter_decision',outcome='UNAVAILABLE',symbol=row['symbol'],bar_date=str(target),reasons=r['reasons']))
+  audit_events.append(al.event(sys.modules[__name__],'strategy_decisions',outcome='not_evaluated',symbol=row['symbol'],bar_date=str(target),decisions=[{'strategy':i,'outcome':'not_evaluated','reason':'original_audit_exclusion'} for i in range(1,8)]))
   stm.append(('INSERT INTO paper_prefilter_states VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,symbol,policy_version) DO UPDATE SET status=excluded.status,metrics_json=excluded.metrics_json,observed_at=excluded.observed_at',(NS,str(target),row['symbol'],pf.POLICY['version'],'UNAVAILABLE',js(r),t.isoformat())))
  raw=raw[valid].copy();wm={(r['strategy'],r['symbol']):r['bar_date'] for r in db.query('SELECT * FROM paper_watermarks WHERE namespace=?',(NS,))};pos={(p['strategy'],p['symbol']):p for p in positions};pending_rows=db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,));pending=set()
  for s in pending_rows:
   if not snapshot_only and s['side']=='BUY' and s['eligible_date']<=str(target):stm.append(("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id'])))
   else:pending.add((s['strategy'],s['symbol'],s['side']))
- qual=[];created=0;funnel={str(i):{'current_symbols':0,'individual_pass_counts':{},'sequential_pass_counts':{},'qualified':0} for i in range(1,8)};skipped=[sym for sym in syms if sym not in set(raw.symbol)]
+ strategy_audit={};qual=[];created=0;funnel={str(i):{'current_symbols':0,'individual_pass_counts':{},'sequential_pass_counts':{},'qualified':0} for i in range(1,8)};skipped=[sym for sym in syms if sym not in set(raw.symbol)]
  for sym,g in raw.groupby('symbol'):
   g=g.sort_values('trade_date').reset_index(drop=True)
   if str(g.iloc[-1].trade_date)!=str(target):skipped.append(sym);continue
@@ -219,8 +239,10 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
    if gatepass or p:f=indicator(strategy,g)
    else:f=g.assign(entry_condition=False,exit_condition=False)
    x=f.iloc[-1];bar=str(x.trade_date)
+   if p:audit_events.append(al.event(sys.modules[__name__],'held_exit_evaluation',strategy=strategy,symbol=sym,bar_date=bar,trigger=bool(x.exit_condition),reason='completed_daily_exit',target_defined=False))
    stage2=au.checklist(sys.modules[__name__],strategy,f) if gatepass else {'all_filters_satisfied':None,'checks':{},'reason':'NOT_EVALUATED_PREFILTER'}
    checklist={**stage2,'prefilter':gate,'entry_evaluated':gatepass,'input_policy':input_details[sym]}
+   strategy_audit.setdefault(sym,[]).append({'strategy':strategy,'outcome':'qualified' if gatepass and bool(x.entry_condition) else 'rejected' if gatepass else 'not_evaluated','checks':stage2.get('checks',{}),'reason':'ok' if gatepass else 'NOT_EVALUATED_PREFILTER'})
    stm.append(('INSERT INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,strategy,symbol) DO UPDATE SET qualified=excluded.qualified,checklist_json=excluded.checklist_json,plan_json=excluded.plan_json,scanned_at=excluded.scanned_at',(NS,bar,strategy,sym,int(gatepass and bool(x.entry_condition)),js(checklist),js(au.plan(sys.modules[__name__],strategy,x)),t.isoformat())))
    checks=stage2.get('checks',{});counts=funnel[str(strategy)];counts['current_symbols']+=int(gatepass);sofar=True
    for name,passed in checks.items():
@@ -237,6 +259,7 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
    side='SELL' if p and missed_exit else ('BUY' if gatepass and not p and bool(x.entry_condition) else None)
    if side and (strategy,sym,side) not in pending:
     sid=stable_id(strategy,sym,bar,side);eligible=str(next_session(target));stm.append(('INSERT OR IGNORE INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',(NS,sid,strategy,sym,bar,side,'pending','daily_exit:'+p['entry_at'] if side=='SELL' else 'daily_entry:'+pf.POLICY['version'],t.isoformat(),eligible)));created+=1
+    audit_events.append(al.event(sys.modules[__name__],'paper_order_queued',strategy=strategy,symbol=sym,signal_id=sid,bar_date=bar,side=side,reason='completed_daily_exit' if side=='SELL' else 'qualified'))
     if side=='BUY':
      stm.append(('INSERT OR IGNORE INTO paper_entry_gate_proofs VALUES(?,?,?,?,?)',(NS,sid,bar,sym,pf.POLICY['version'])))
      stm.append(('INSERT OR IGNORE INTO paper_entry_input_proofs VALUES(?,?,?,?,?)',(NS,sid,si.POLICY['version'],bar,t.isoformat())))
@@ -249,21 +272,45 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
   if not snapshot_only:
    for strategy in range(1,8):stm.append(('INSERT INTO paper_watermarks VALUES(?,?,?,?) ON CONFLICT(namespace,strategy,symbol) DO UPDATE SET bar_date=excluded.bar_date',(NS,strategy,sym,str(target))))
   for strategy in range(1,8):stm.append(('INSERT INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,strategy,symbol) DO UPDATE SET qualified=0,checklist_json=excluded.checklist_json,scanned_at=excluded.scanned_at',(NS,str(target),strategy,sym,0,js({'data_current':False,'reason':'NOT_EVALUATED_PREFILTER','prefilter':gates[sym],'entry_evaluated':False,'all_filters_satisfied':None}),'{}',t.isoformat())))
+ for sym,decisions in strategy_audit.items():audit_events.append(al.event(sys.modules[__name__],'strategy_decisions',symbol=sym,bar_date=str(target),decisions=decisions))
+ for sym in sorted(set(skipped)):audit_events.append(al.event(sys.modules[__name__],'strategy_decisions',outcome='not_evaluated',symbol=sym,bar_date=str(target),decisions=[{'strategy':i,'outcome':'not_evaluated','reason':'stale_stock_or_benchmark'} for i in range(1,8)]))
+ stm+=al.statements(audit_events)
  if not NS.startswith('test_'):pd.DataFrame(qual).to_csv(ROOT/'out/latest_qualifiers.csv',index=False)
  report={'input_validation':input_audit,'target_completed_bar':str(target),'bootstrap':bootstrap,'funnel':funnel,'universe_symbols':len(syms),'frozen_universe_symbols':len(universe()),'excluded_audit_symbols':59,'original_audit_universe':751,'signals_queued':created,'latest_qualifiers':len(qual),'unavailable_current_symbols':skipped,'invalid_rows_excluded':int((~valid).sum()),'sync':sync_report,'no_backlog_fills':True,'screen_only':snapshot_only,'prefilter_policy':pf.POLICY,'prefilter_counts':{k:sum(r['status']==k for r in gates.values()) for k in ['PASS','FAIL','UNAVAILABLE']},'benchmark_sync_error':benchmark_error,'history_repair':repair_report,'data_refresh_status':repair_report.get('status') if repair_report else 'not_requested'};stm.append(('INSERT INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace,bar_date) DO UPDATE SET scanned_at=excluded.scanned_at,status=excluded.status,report_json=excluded.report_json',(NS,str(target),t.isoformat(),'partial' if skipped else 'ok',js(report))));db.batch(stm);db.run('scan','partial' if skipped else 'ok',**report);return report
 
-def monitor(db,api):
+def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
+ e=sys.modules[__name__];start=time.monotonic()
+ with al.scope(e,db,'scan'):
+  al.emit(e,db,'scan_started',screen_only=snapshot_only)
+  try:r=_scan(db,api,do_sync,bootstrap,snapshot_only)
+  except Exception as ex:
+   al.emit(e,db,'scan_failed',outcome='failed',severity='ERROR',error_code=type(ex).__name__);raise
+  al.emit(e,db,'scan_completed',duration_ms=round((time.monotonic()-start)*1000),**r)
+  return r
+
+def _monitor(db,api):
  t=now()
  if not au.active(sys.modules[__name__],t):r={'status':'market_closed_or_calendar_unverified','at_IST':t.isoformat(),'fills':0};db.run('monitor','closed',**r);return r
  positions=db.positions();signals=db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,));symbols=sorted({p['symbol'] for p in positions}|{s['symbol'] for s in signals})
- if not symbols:return {'status':'idle','fills':0,'at_IST':t.isoformat()}
- quotes=api.quotes(symbols);t=now();audit_quotes(db,quotes,t);fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
+ if not symbols:
+  al.emit(sys.modules[__name__],db,'monitor_idle',open_positions=0,pending_signals=0,poll_seconds=CFG['poll_seconds'])
+  return {'status':'idle','fills':0,'at_IST':t.isoformat()}
+ request_started=now();request_clock=time.monotonic();al.emit(sys.modules[__name__],db,'quote_request',request_started_at=request_started, symbols_count=len(symbols),open_positions=len(positions),pending_signals=len(signals))
+ quotes=api.quotes(symbols);t=now();al.emit(sys.modules[__name__],db,'quote_response',request_started_at=request_started,response_received_at=t,duration_ms=round((time.monotonic()-request_clock)*1000),symbols_count=len(symbols))
+ quote_rows=[]
+ for sym,q in quotes.items():
+  ok,why=valid_quote(q,t);quote_rows.append({'symbol':sym,'price':q.get('price'),'quote_at':q.get('quote_at'),'accepted':ok,'reason':why,'request_started_at':request_started,'response_received_at':t})
+ for i in range(0,len(quote_rows),50):al.emit(sys.modules[__name__],db,'quote_checks',rows=quote_rows[i:i+50],count=len(quote_rows[i:i+50]))
+ audit_quotes(db,quotes,t);fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
  # Every pending exit is processed before entries. Momentum observed-price stop uses actual LTP, never synthetic threshold fill.
- actions=[]
+ actions=[];position_rows=[]
  for p in positions:
-  q=quotes.get(p['symbol']);ok,_=valid_quote(q,t)
+  q=quotes.get(p['symbol']);ok,why=valid_quote(q,t)
+  position_rows.append({'strategy':p['strategy'],'symbol':p['symbol'],'quantity':p['qty'],'price':q.get('price') if q else None,'accepted':ok,'reason':why,'stop_defined':p['strategy']==7,'target_defined':False,'threshold':.9*p['high_water'] if p['strategy']==7 else None,'high_water':p['high_water'],'trigger':bool(ok and p['strategy']==7 and q['price']<=.9*p['high_water'])})
   if ok and p['strategy']==7 and q['price']<=.9*p['high_water']:
+   al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=p['symbol'],price=q['price'],quote_at=q['quote_at'],threshold=.9*p['high_water'],reason='observed_stop_crossing',target_defined=False)
    actions.append({'id':stable_id(7,p['symbol'],p['entry_at'],'stop'),'strategy':7,'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True})
+ for i in range(0,len(position_rows),50):al.emit(sys.modules[__name__],db,'position_checks',rows=position_rows[i:i+50],count=len(position_rows[i:i+50]))
  actions+=sorted(signals,key=lambda s:0 if s['side']=='SELL' else 1)
  for s in actions:
   key=(s['strategy'],s['symbol'])
@@ -276,6 +323,14 @@ def monitor(db,api):
   ok,_=valid_quote(q,t)
   if ok:st.append(('UPDATE paper_positions SET mark_price=?,mark_at=?,updated_at=? WHERE namespace=? AND symbol=? AND qty>0',(q['price'],q['quote_at'],t.isoformat(),NS,sym)))
  db.batch(st);report={'status':'ok','fresh_quotes':sum(valid_quote(q,t)[0] for q in quotes.values()),'quotes':len(quotes),'fills':fills,'at_IST':t.isoformat()};db.run('monitor','ok',**report);return report
+
+def monitor(db,api):
+ e=sys.modules[__name__];start=time.monotonic()
+ with al.scope(e,db,'monitor'):
+  al.emit(e,db,'monitor_started',poll_seconds=CFG['poll_seconds'])
+  r=_monitor(db,api)
+  al.emit(e,db,'monitor_completed',status=r.get('status'),fills=r.get('fills',0),fresh_quotes=r.get('fresh_quotes',0),duration_ms=round((time.monotonic()-start)*1000),poll_seconds=CFG['poll_seconds'])
+  return r
 
 def pnl(db):
  t=now();day=t.date().isoformat();ps=db.positions();fills=db.query('SELECT * FROM paper_fills WHERE namespace=?',(NS,));today=[x for x in fills if datetime.fromisoformat(x['filled_at']).astimezone(IST).date()==t.date()];realized=sum(x['realized_pnl'] for x in fills);unrealized=0.;unknown=[];stale=[]
@@ -299,18 +354,29 @@ def pnl(db):
  db.batch([('INSERT INTO paper_pnl(namespace,day,as_of,report_json) VALUES(?,?,?,?) ON CONFLICT(namespace,day) DO UPDATE SET as_of=excluded.as_of,report_json=excluded.report_json',(NS,day,t.isoformat(),js(report)))]);return report
 
 def init(db):
+ al.init(db)
+ db.batch([(gd.SCHEMA,())])
  si.init(db)
  pf.init(sys.modules[__name__],db)
  db.batch([(hr.SCHEMA,())])
  stm=[(sql.strip(),()) for sql in (ROOT/'schema.sql').read_text().split(';') if sql.strip()];db.batch(stm);db.batch([('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'mode','PAPER_ONLY')),('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'automation_schema_version','2'))]);db.call({'action':'register_policy'});return {'schema':'ready','namespace':NS,'paper_only':True}
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
- parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly','repair-history']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);args=parser.parse_args()
+ parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
  if not 1<=args.max_history_requests<=1100 or not 1<=args.max_history_seconds<=1080:parser.error('historical repair budget outside safe bounds')
- if args.command in ['worker','ensure-monitor','health']:
+ if args.command in ['worker','ensure-monitor','health','ensure-session','guardian','replay-audit','export-logs']:
   # Supervision must remain reachable even while a worker/scan holds engine.lock.
   try:
-   db=DB();fn={'worker':au.worker,'ensure-monitor':au.ensure_monitor,'health':au.health}[args.command];print(js(fn(sys.modules[__name__],db)))
+   db=DB();e=sys.modules[__name__]
+   if args.command=='export-logs':
+    if not args.session or not 1<=args.max_events<=200000:raise ValueError('export_arguments')
+    print(js(al.export(e,db,args.session,args.format,args.max_events)))
+   elif args.command=='replay-audit':
+    if not 1<=args.max_files<=1000:raise ValueError('replay_arguments')
+    print(js(al.replay(e,db,args.max_files)))
+   else:
+    fn={'worker':au.worker,'ensure-monitor':au.ensure_monitor,'health':au.health,'ensure-session':gd.ensure,'guardian':gd.run}[args.command]
+    with al.scope(e,db,args.command):print(js(fn(e,db)))
   except Exception as ex:
    print(js({'status':'failed','error':au.safe_error(ex),'paper_only':True}));sys.exit(1)
   return
@@ -318,29 +384,31 @@ def main():
   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:print(js({'status':'another_engine_command_running'}));return
   db=DB()
+  audit_scope=al.scope(sys.modules[__name__],db,args.command) if args.command!='init' else contextlib.nullcontext()
   try:
-   if args.command=='init':out=init(db)
-   elif args.command=='probe':
-    api=MarketData();q=api.quotes(['RELIANCE-EQ']);t=now();audit_quotes(db,q,t);out={'market_open':is_open(t),'at_IST':t.isoformat(),'quotes':q,'acceptance':{k:valid_quote(v,t) for k,v in q.items()},'orders_sent_to_broker':0,'token_refreshed':api.refreshed};db.run('probe','ok',**out)
-   elif args.command=='repair-history':out=hr.repair(sys.modules[__name__],db,MarketData(),completed_day(now()),budget=args.max_history_requests,deadline_seconds=args.max_history_seconds,progress=str(ROOT/'out/history-repair-progress.json'))
-   elif args.command in ['bootstrap','scan','screen-only']:out=scan(db,MarketData(),args.sync,args.command=='bootstrap',args.command=='screen-only')
-   elif args.command=='monitor-once':
-    out=monitor(db,MarketData())
-    if au.active(sys.modules[__name__],now()):out['pnl']=pnl(db)
-    else:out['snapshot_skipped_market_closed']=True
-   elif args.command=='positions':out=db.positions()
-   elif args.command=='trades-today':out=[x for x in db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(NS,)) if datetime.fromisoformat(x['filled_at']).astimezone(IST).date()==now().date()]
-   elif args.command=='pnl':out=pnl(db)
-   elif args.command=='status':out={'paper_only':True,'namespace':NS,'market_open':is_open(now()),'calendar_valid_through':CFG['calendar_valid_through'],'last_runs':db.query('SELECT kind,at,status,details_json FROM paper_runs WHERE namespace=? ORDER BY id DESC LIMIT 5',(NS,)),'pending':db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,)),'pnl':pnl(db)}
-   elif args.command=='ensure-monitor':out=au.ensure_monitor(sys.modules[__name__],db)
-   elif args.command=='health':out=au.health(sys.modules[__name__],db)
-   elif args.command=='finance':out=au.finance(sys.modules[__name__],db)
-   elif args.command=='charges':out=db.query('SELECT fill_id,day,strategy,symbol,side,policy_version,components_json,total_paise FROM paper_fill_costs WHERE namespace=? ORDER BY fill_id',(NS,))
-   elif args.command=='overlap':out=au.overlap(sys.modules[__name__],db)
-   elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
-   elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
-   log('command_completed',command=args.command,namespace=NS)
-   print(js(out))
+   with audit_scope:
+    if args.command=='init':out=init(db)
+    elif args.command=='probe':
+     api=MarketData();q=api.quotes(['RELIANCE-EQ']);t=now();audit_quotes(db,q,t);out={'market_open':is_open(t),'at_IST':t.isoformat(),'quotes':q,'acceptance':{k:valid_quote(v,t) for k,v in q.items()},'orders_sent_to_broker':0,'token_refreshed':api.refreshed};db.run('probe','ok',**out)
+    elif args.command=='repair-history':out=hr.repair(sys.modules[__name__],db,MarketData(),completed_day(now()),budget=args.max_history_requests,deadline_seconds=args.max_history_seconds,progress=str(ROOT/'out/history-repair-progress.json'))
+    elif args.command in ['bootstrap','scan','screen-only']:out=scan(db,MarketData(),args.sync,args.command=='bootstrap',args.command=='screen-only')
+    elif args.command=='monitor-once':
+     out=monitor(db,MarketData())
+     if au.active(sys.modules[__name__],now()):out['pnl']=pnl(db)
+     else:out['snapshot_skipped_market_closed']=True
+    elif args.command=='positions':out=db.positions()
+    elif args.command=='trades-today':out=[x for x in db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(NS,)) if datetime.fromisoformat(x['filled_at']).astimezone(IST).date()==now().date()]
+    elif args.command=='pnl':out=pnl(db)
+    elif args.command=='status':out={'paper_only':True,'namespace':NS,'market_open':is_open(now()),'calendar_valid_through':CFG['calendar_valid_through'],'last_runs':db.query('SELECT kind,at,status,details_json FROM paper_runs WHERE namespace=? ORDER BY id DESC LIMIT 5',(NS,)),'pending':db.query("SELECT * FROM paper_signals WHERE namespace=? AND status='pending'",(NS,)),'pnl':pnl(db)}
+    elif args.command=='ensure-monitor':out=au.ensure_monitor(sys.modules[__name__],db)
+    elif args.command=='health':out=au.health(sys.modules[__name__],db)
+    elif args.command=='finance':out=au.finance(sys.modules[__name__],db)
+    elif args.command=='charges':out=db.query('SELECT fill_id,day,strategy,symbol,side,policy_version,components_json,total_paise FROM paper_fill_costs WHERE namespace=? ORDER BY fill_id',(NS,))
+    elif args.command=='overlap':out=au.overlap(sys.modules[__name__],db)
+    elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
+    elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
+    log('command_completed',command=args.command,namespace=NS)
+    print(js(out))
   except Exception as e:
    # Exception contents can contain remote request details; only vetted internal error labels exposed.
    reason=au.safe_error(e);log('command_failed',command=args.command,error=reason)

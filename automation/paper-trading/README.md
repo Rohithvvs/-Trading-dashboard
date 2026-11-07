@@ -160,3 +160,42 @@ Final corrected6 Nov2026 screen:692 eligible identities →689 evaluable (176 me
 Timing note: Friday6 Nov is already watermarked and cannot seed historical orders. The verified Sunday8 Nov special session is retained as completed-bar input: a genuinely new available daily bar may be processed by Monday's weekday scan.10 Nov is a verified holiday. No first-entry date or fill is promised; fresh data, exact active-policy proofs, strategy qualification and session/price guards still apply. Parent confirmed the saved morning routine intent now includes the prefilter/input-policy safeguards with its existing08:45 weekday timing unchanged.
 
 Snapshot identity is also enforced: the BUY proof observation, active prefilter observation and strategy scan timestamps must agree, not only their policy/bar. A deliberate maintenance `screen-only` re-screen invalidates any older pending proof rather than silently carrying it onto refreshed inputs; ordinary read-only dashboard refresh does not alter these timestamps.
+
+## Faster local monitoring and complete-flow audit (pt34u)
+
+The healthy local worker retains its **30-second target polling** (already faster than the requested1–2minutes). New `ensure-session` arms a detached singleton **60-second guardian** from08:30 on a verified weekday; the08:45 routine should arm it **before** starting the scan. Before09:15 it makes no quote/order calls. During the verified session, capped at15:30 IST, it checks/restarts the existing worker. It stops at close, on a changed date, or after8hours/480checks. No weekend/holiday busy loop. Existing leases, PID/start/cwd identity checks and atomic paper guards remain authoritative. A stale worker is noticed after120seconds (600seconds during intentional outage backoff), signalled only when exactly owned, and restarted at a subsequent check. Auth-paused workers have a300-second retry spacing; provider auth circuits/backoff remain intact.
+
+These are healthy-host **targets, not an SLA**: API/DB latency, lock contention, backoff and recovery add delay. A dead host or lost guardian still needs the existing native **five-minute supervisor plus scheduler jitter**, potentially longer during outage/restart; native routines cannot honestly promise1/2-minute scheduling. This runs on the box, not Vercel. No operating-system service was installed. Execution remains paper-only, weekdays and verified sessions, with no forced buys or fixed targets. Strategy7 retains its actual10% completed-close high-water stop; reported hits are observed quote crossings, not guaranteed threshold-price fills.
+
+### Coordinator routine commands (save externally; not mutated by this package)
+
+```bash
+cd /workspace/paper-trading
+./run.sh ensure-session            #08:45 weekday routine: BEFORE scan
+./run.sh scan --sync
+# Existing five-minute9:15–15:30 weekday supervisor:
+./run.sh ensure-session
+./run.sh ensure-monitor
+./run.sh health
+# Existing16:10 weekday accounting routine:
+./run.sh eod
+./run.sh weekly
+./run.sh finance
+./run.sh replay-audit --max-files 1000
+#16:25 IST review on an actual verified trading day (replace date):
+./run.sh replay-audit --max-files 1000
+./run.sh export-logs --session 2026-11-09 --format jsonl
+./run.sh export-logs --session 2026-11-09 --format csv
+```
+
+The coordinator must confirm the saved routine wording and bounded next-trading-day observation separately. Existing timings are preserved; this release does not itself save routines or claim Monday execution.9Nov is an eligible weekday in the current verified calendar; roll observation forward if the actual session/data are unavailable. Review after16:10 EOD plus its allowed delay; bounded observation deadline20Nov2026. No first-fill or winning-performance promise.
+
+### Durable, sanitized logs and exports
+
+Additive Turso `paper_events` stores run/parent/batch correlation, signal/strategy/symbol/bar, both active policy IDs, event/outcome/reasons and allowlisted metrics. Scan decisions cover all751 audited identities, including59 original exclusions and7 explicit not-evaluated decisions for gated-out stocks. Qualification/watermarks/queued signals and their decision audit commit together. Actual fill/block audit commits inside the existing atomic fill transaction: failure rolls back the trade. Quotes include logical and actual provider-batch request/response timestamps, freshness/acceptance and position/stop evaluations. Idle checks, missed-slot/heartbeat telemetry, failures and EOD/reconciliation are recorded; no invented target events.
+
+Frequent telemetry is synchronously fsynced into0600 local write-ahead files under `logs/audit-spool/`, then bulk replayed into Turso at monitor/scan/EOD boundaries and on subsequent startup/guardian checks. Stable event IDs make replay idempotent. A DB outage retains the spool; DB plus spool failure stops the operation. Unflushed telemetry is explicitly flagged in exports. Trade transactions still require their atomic DB audit even when telemetry is spooled. There is no log pruning in this release; monitor storage and archive reviewed exports rather than silently deleting history.
+
+`out/audit-YYYY-MM-DD.jsonl`, `.csv` and `-report.json` are private local artifacts. Exports stream keyset pages, default bounded200000events; truncation is explicit. Each event carries source time, actual local recording time and actual first DB persistence time, with UTC and **IST** renderings. Export reports distinguish a complete751×7 decision segment, successful reconciled EOD, missing/gapped monitor coverage (>120seconds), pending spool and truncation. They separately state whether an execution or stop crossing was actually observed: no trades/hits is legitimate and never fabricated. A Saturday startup export is not proof of Monday flow. Logs exclude credentials, headers/provider dumps, remote URLs, arbitrary exception messages and process secrets. No expanded public unauthenticated logging API was added; use the CLI exports and attach the sanitized files privately for review. JSONL `data_json` is the allowlisted structured payload encoded as a JSON string; CSV fields are formula-safe.
+
+Monitoring release verification:135 isolated engine tests passed in both source and installed runtime;111 dashboard tests passed. Lint, production build, exact9-secret scan and production dependency audit passed. Saturday installation added only audit/guardian tables and3 truthful configuration/start/end events: real signals/fills/positions/costs/EOD remain0, demo1, watermarks4844 all6Nov2026. Closed-day ensure-session started no guardian/worker and made no quote/order calls. Saved guardian routine commands and real-session observation still need separate coordinator confirmation.

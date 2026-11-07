@@ -3,6 +3,7 @@ import contextlib,fcntl,json,os,signal,subprocess,sys,time
 from datetime import datetime,date,timedelta,time as walltime
 from decimal import Decimal,ROUND_HALF_UP
 from pathlib import Path
+import audit as al
 
 def cents(v):return int((Decimal(str(v))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
 def safe_error(exc):
@@ -86,7 +87,7 @@ def overlap(e,db):
  stocks=[{'symbol':s,'strategies':v,'count':len(v),'cohort':'single' if len(v)==1 else 'exactly_2' if len(v)==2 else 'exactly_3' if len(v)==3 else '4_plus'} for s,v in groups.items()]
  return {'as_of_bar':bar,'stocks':stocks,'bucket_counts':{k:sum(x['cohort']==k for x in stocks) for k in ['single','exactly_2','exactly_3','4_plus']},'at_least_2':sum(x['count']>=2 for x in stocks),'at_least_3':sum(x['count']>=3 for x in stocks),'execution':'Independent virtual strategy holdings; not a combined funded portfolio. Entry attribution is immutable, never this latest cohort.'}
 
-def eod(e,db):
+def _eod(e,db):
  t=e.now();ss=e.session(t.date())
  if t.weekday()>=5 or not ss or t.timetz().replace(tzinfo=None)<walltime(16):return {'status':'not_verified_weekday_eod','snapshot_written':False}
  r=finance(e,db);prior=db.query('SELECT day,report_json FROM paper_eod WHERE namespace=? AND day<? ORDER BY day DESC LIMIT 1',(e.NS,str(t.date())))
@@ -104,6 +105,13 @@ def eod(e,db):
  r['official_close']=False;r['missing_eod_warning']='Last accepted in-session marks, potentially stale; never fabricated official close. Missing daily baseline means daily P&L unavailable.'
  db.batch([('INSERT INTO paper_eod(namespace,day,as_of,report_json) VALUES(?,?,?,?) ON CONFLICT(namespace,day) DO UPDATE SET as_of=excluded.as_of,report_json=excluded.report_json',(e.NS,str(t.date()),t.isoformat(),e.js(r)))]);return r
 
+def eod(e,db):
+ with al.scope(e,db,'eod'):
+  al.emit(e,db,'eod_started')
+  r=_eod(e,db)
+  al.emit(e,db,'eod_completed',severity='INFO' if r.get('ledger_reconciled',False) else 'WARN',**{**r,'snapshot_written':r.get('snapshot_written',True),'charge_policy_version':r.get('policy_version')})
+  return r
+
 def weekly(e,db):
  end=e.now().date();start=end-timedelta(days=end.weekday());rs=db.query('SELECT day,report_json FROM paper_eod WHERE namespace=? AND day>=? AND day<=? ORDER BY day',(e.NS,str(start),str(end)));values=[json.loads(x['report_json']) for x in rs];expected=[];d=start
  while d<=end:
@@ -119,7 +127,7 @@ def heartbeat(e,db,status,**detail):
  db.batch([('INSERT INTO paper_monitor_health(namespace,pid,heartbeat_at,status,detail_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET pid=excluded.pid,heartbeat_at=excluded.heartbeat_at,status=excluded.status,detail_json=excluded.detail_json',(e.NS,os.getpid(),e.now().isoformat(),status,e.js(detail)))])
 def health(e,db):
  rows=db.query('SELECT * FROM paper_monitor_health WHERE namespace=?',(e.NS,));r=rows[0] if rows else None
- return {'paper_only':True,'automation_session_open':active(e,e.now()),'calendar_valid_through':e.CFG['calendar_valid_through'],'calendar_verified':e.session(e.now().date()) is not None,'heartbeat':r,'heartbeat_stale':bool(active(e,e.now()) and (not r or (e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds()>600)),'scheduler_required':True,'poll_seconds':e.CFG['poll_seconds'],'calendar_review_warning':(date.fromisoformat(e.CFG['calendar_valid_through'])-e.now().date()).days<=14,'policy_review_warning':(date.fromisoformat(json.loads((e.ROOT/'charge_policy.json').read_text())['valid_through'])-e.now().date()).days<=14}
+ return {'paper_only':True,'automation_session_open':active(e,e.now()),'calendar_valid_through':e.CFG['calendar_valid_through'],'calendar_verified':e.session(e.now().date()) is not None,'heartbeat':r,'heartbeat_stale':bool(active(e,e.now()) and (not r or (e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds()>(600 if r['status']=='backoff' else e.CFG.get('worker_stale_seconds',120)))),'scheduler_required':True,'poll_seconds':e.CFG['poll_seconds'],'calendar_review_warning':(date.fromisoformat(e.CFG['calendar_valid_through'])-e.now().date()).days<=14,'policy_review_warning':(date.fromisoformat(json.loads((e.ROOT/'charge_policy.json').read_text())['valid_through'])-e.now().date()).days<=14}
 
 def ensure_monitor(e,db):
  if not active(e,e.now()):return {'status':'market_closed_or_calendar_unverified','started':False}
@@ -136,7 +144,7 @@ def ensure_monitor(e,db):
    return {'status':'unhealthy_worker_needs_attention' if h['heartbeat_stale'] else 'already_running','started':False,**h}
   # Lock is an OS lease; a stale PID alone never causes process termination or prevents restart.
   with (e.ROOT/'logs/monitor-worker.log').open('a') as out:
-   p=subprocess.Popen([sys.executable,str(e.ROOT/'engine.py'),'worker'],stdout=out,stderr=out,start_new_session=True,cwd=e.ROOT,pass_fds=(lock.fileno(),),env={**os.environ,'PAPER_MONITOR_LOCK_FD':str(lock.fileno())})
+   p=subprocess.Popen([sys.executable,str(e.ROOT/'engine.py'),'worker'],stdin=subprocess.DEVNULL,stdout=out,stderr=out,start_new_session=True,cwd=e.ROOT,pass_fds=(lock.fileno(),),env={**os.environ,'PAPER_MONITOR_LOCK_FD':str(lock.fileno())})
   return {'status':'starting','started':True,'pid':p.pid,'singleton_enforced_by_child':True}
 
 def worker(e,db,sleep=time.sleep,max_polls=None,api_factory=None):
@@ -152,13 +160,15 @@ def worker(e,db,sleep=time.sleep,max_polls=None,api_factory=None):
     start=time.monotonic();delay=e.CFG['poll_seconds']
     with (e.ROOT/'engine.lock').open('a+') as lock:
      try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-     except BlockingIOError:heartbeat(e,db,'waiting_for_engine_lock');sleep(delay);continue
+     except BlockingIOError:
+      heartbeat(e,db,'waiting_for_engine_lock');al.emit(e,db,'worker_waiting',reason='singleton_busy',poll_seconds=delay);sleep(delay);continue
      try:
       heartbeat(e,db,'polling');api=api or factory();r=e.monitor(db,api);polls+=1;failures=0
       if time.monotonic()-last_pnl>=300:e.pnl(db);last_pnl=time.monotonic()
       heartbeat(e,db,'healthy',polls=polls,last_result=r)
+      al.emit(e,db,'worker_check',duration_ms=round((time.monotonic()-start)*1000),poll_seconds=delay,missed_checks=max(0,int((time.monotonic()-start)//delay)-1),status=r.get('status'))
      except Exception as ex:
-      reason=safe_error(ex);failures+=1;polls+=1;heartbeat(e,db,'backoff',error=reason,failures=failures)
+      reason=safe_error(ex);failures+=1;polls+=1;al.emit(e,db,'worker_failure',outcome='failed',severity='ERROR',error_code=reason,failures=failures);heartbeat(e,db,'backoff',error=reason,failures=failures)
       if 'auth' in reason.lower() or 'token_refresh' in reason.lower():paused=True;heartbeat(e,db,'paused_auth',error=reason);return {'status':'paused_auth','polls':polls}
       delay=min(300,30*2**min(failures,4))
     sleep(max(0,delay-(time.monotonic()-start)))
