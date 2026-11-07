@@ -127,7 +127,7 @@
     ],
     "all_satisfied": true
   },
-  "dashboard_tests_passed": 100,
+  "dashboard_tests_passed": 101,
   "engine_source_tests_passed": 68,
   "engine_installed_tests_passed": 68,
   "lint_passed": true,
@@ -144,5 +144,12 @@
   },
   "prepared_for_parent_visual_QA": true,
   "parent_visual_QA_passed": true,
-  "parent_visual_QA_confirmed_IST": "2026-11-07T13:11:00+05:30"
+  "parent_visual_QA_confirmed_IST": "2026-11-07T13:11:00+05:30",
+  "deployment_config_regression": {
+    "official_schema": "https://openapi.vercel.sh/vercel.json",
+    "includeFiles_type": "string",
+    "glob_matches_exact_three_public_files": true,
+    "github_previous_deployment_failed_IST": "2026-11-07T13:12:01+05:30",
+    "fix": "Replace unsupported array with one brace-expanded glob; no UI or accounting changes"
+  }
 }
