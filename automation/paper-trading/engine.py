@@ -163,7 +163,7 @@ def _fill(db,s,q,t):
    decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':q['price'],quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']})
    return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':'LTP_LEGACY'}
  r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':'LTP_LEGACY','strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
- if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH'):
+ if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH','ADV_FILTER_SKIP'):
   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause=r['reason'],price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],max_strategies_per_isin=cap.POLICY['max_strategies_per_isin'],quantity=0)
  if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
  return r

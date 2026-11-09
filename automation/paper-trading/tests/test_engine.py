@@ -8,9 +8,13 @@ class PaperTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.db=e.DB(str(e.ROOT/'tests'/'test_')+uuid.uuid4().hex+'.sqlite');e.NS='test_fixture';e.init(cls.db)
-  cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL)',())]);e.now=lambda:T
+  cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL,turnover REAL)',())]);e.now=lambda:T
  def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T
+ def seed_adv(self,symbol,turnover,sessions=20):
+  self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',(symbol,))])
+  if sessions:self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close,turnover) VALUES(?,?,?,?)',(symbol,(T.date()-timedelta(days=i)).isoformat(),100,turnover)) for i in range(1,sessions+1)])
  def signal(self,side='BUY',symbol='RELIANCE-EQ',strategy=1,eligible='2026-11-09'):
+  self.seed_adv(symbol,200000000)
   s={'id':uuid.uuid4().hex,'strategy':strategy,'symbol':symbol,'side':side,'bar_date':'2026-11-08','eligible_date':eligible,'reason':'fixture'}
   self.db.batch([('INSERT INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',(e.NS,s['id'],strategy,symbol,s['bar_date'],side,'pending','fixture',T.isoformat(),eligible))])
   if side=='BUY':self.db.batch([('INSERT OR REPLACE INTO paper_entry_input_proofs VALUES(?,?,?,?,?)',(e.NS,s['id'],e.si.POLICY['version'],s['bar_date'],T.isoformat())),('INSERT OR REPLACE INTO paper_prefilter_states VALUES(?,?,?,?,?,?,?)',(e.NS,s['bar_date'],symbol,e.pf.POLICY['version'],'PASS','{}',T.isoformat())),('INSERT OR REPLACE INTO paper_entry_gate_proofs VALUES(?,?,?,?,?)',(e.NS,s['id'],s['bar_date'],symbol,e.pf.POLICY['version'])),('INSERT OR IGNORE INTO paper_qualifier_states VALUES(?,?,?,?,?,?,?,?)',(e.NS,s['bar_date'],strategy,symbol,1,e.js({'input_policy':{'version':e.si.POLICY['version']}}),'{}',T.isoformat()))])
@@ -103,6 +107,23 @@ class PaperTests(unittest.TestCase):
   self.assertEqual(len(self.db.query('SELECT * FROM paper_shadow_costs WHERE namespace=? AND signal_id=?',(e.NS,skipped['id']))),1)
   self.assertTrue(e.fill(self.db,self.signal(symbol='TCS-EQ',strategy=5),self.quote(),T)['filled'])
   self.assertEqual(len(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'RELIANCE-EQ'))),3)
+ def test_adv_floor_skips_a_thin_stock_and_still_allows_the_exit(self):
+  thin=self.signal();self.seed_adv('RELIANCE-EQ',90000000)
+  blocked=e.fill(self.db,thin,self.quote(),T)
+  self.assertEqual(blocked['reason'],'ADV_FILTER_SKIP');self.assertEqual(blocked['quantity'],0)
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,thin['id']))[0]['status'],'pending')
+  self.assertFalse(self.db.query('SELECT * FROM paper_fills WHERE namespace=? AND signal_id=?',(e.NS,thin['id'])))
+  decision=self.db.query('SELECT cause,rule,payload_json FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,thin['id']))[0]
+  self.assertEqual(decision['cause'],'ADV_FILTER_SKIP');self.assertEqual(decision['rule'],'median_20d_traded_value_vs_placeholder_floor')
+  self.assertEqual(json.loads(decision['payload_json'])['adv_floor_review'],'pending_funnel_report')
+  exact=self.signal(strategy=2);self.seed_adv('RELIANCE-EQ',100000000)
+  self.assertTrue(e.fill(self.db,exact,self.quote(),T)['filled'])
+  short=self.signal(strategy=3);self.seed_adv('RELIANCE-EQ',500000000,sessions=19)
+  missed=e.fill(self.db,short,self.quote(),T)
+  self.assertEqual(missed['reason'],'ADV_FILTER_SKIP');self.assertEqual(missed['adv_rule'],'lagged_adv_history_short')
+  held=self.signal(symbol='TCS-EQ',strategy=1);self.assertTrue(e.fill(self.db,held,self.quote(),T)['filled'])
+  sell=self.signal('SELL',symbol='TCS-EQ',strategy=1);self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',('TCS-EQ',))])
+  self.assertTrue(e.fill(self.db,sell,self.quote(110),T)['filled'])
  def test_insufficient_sleeve_cash_keeps_the_entry_pending(self):
   # ₹4,99,500 already spent in paise. ₹500 remains, which cannot fund a ₹50,000 entry plus fees.
   self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900001,'2026-11-06',1,'RELIANCE-EQ','INE002A01018','BUY',49950000,'FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_07_v1','{}',0,'2026-11-06T10:00:00+05:30',-49950000,-49950000))])

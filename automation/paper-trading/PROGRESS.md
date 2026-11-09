@@ -29,7 +29,7 @@ The engine is not installed on the bot box.
 
 ## Task Group C — ADV, participation, slippage
 
-- [ ] ADV floor recorded, not frozen until the funnel report
+- [x] ADV floor placeholder ₹10 crore, lagged 20-session median, `ADV_FILTER_SKIP`. Review status remains `pending_funnel_report`. Exits are not filtered.
 - [ ] Participation cap, entries only, exits never skipped
 - [ ] Tiered slippage and 1.5× stress
 
