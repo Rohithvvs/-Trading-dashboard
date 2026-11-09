@@ -1,13 +1,13 @@
 # Self-Improvement (Adaptive 3-Tier) Progress
 
-Branch: `self-improvement-adaptive` (from `freeze-strategies-upgrade`)  
+Branch: `main` (merged from `freeze-strategies-upgrade` & `self-improvement-adaptive`)  
 Updated: 2026-11-09
 
 ## Section 0: Pre-Implementation Review and Task Planning
 - [x] 0.1 Review Current Implementation (`engine.py`, `strategy_rules.json`, `strategy_indicators.py`, `prefilter.py`, cost model, `schema.sql`, `corporate_actions.py`, `pauses.py`, `support_agent.py`)
 - [x] 0.2 Decide New vs. Updated Features (`SELF_IMPROVEMENT_GAP.md`)
 - [x] 0.3 Create Small Tasks with clear definitions of done (`SELF_IMPROVEMENT_GAP.md`)
-- [x] 0.4 Build One Task at a Time (in progress)
+- [x] 0.4 Build One Task at a Time (complete)
 
 ## Implementation Sequence (Section A8 & Section B)
 - [x] Task 1 (A8.1 / A2 / B1): Point-in-time prefilter (`daily_prefilter_universe`) + Bhavcopy `SERIES` archive (multi-year) (`pit_archive.py`, `schema.sql`, `tests/test_pit_archive.py`)
@@ -19,4 +19,4 @@ Updated: 2026-11-09
 - [x] Task 7 (A8.7 / A6 / A7 / B1 / B4): Calibration harness with go/no-go ~30% power floor, oldest-partition tuning, single-touch holdout vault, meta-kill switch, and CI look-ahead truncation test (price + corporate actions) (`calibration.py`, `tests/test_calibration_and_truncation.py`)
 - [x] Task 8 (A8.8 / A6 / B4): Observation-only mode and promotion lock (requires calibration pass + CI look-ahead pass + observation period) (`config.json`, `adaptive_promotion.py`, `tests/test_adaptive_promotion.py`)
 - [x] Task 9 (A8.9 / B6): UI and read API for Tracks A, B, and C status, logs, and controls (`server/automation-read.mjs`, `src/LiveResults.jsx`, `tests/live-results.test.jsx`)
-- [ ] Task 10 (A8.10 / B1–B6): Full checklist verification and acceptance criteria
+- [x] Task 10 (A8.10 / B1–B6): Full checklist verification and acceptance criteria (`tests/test_self_improvement_acceptance.py`)
