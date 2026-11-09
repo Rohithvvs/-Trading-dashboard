@@ -14,6 +14,7 @@ import audit as al
 import guardian as gd
 import history_repair as hr
 import capital as cap
+import corporate_actions as ca
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
 RULE_HASH={str(k):hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in RULES.items() if str(k).isdigit()}
@@ -386,7 +387,10 @@ def _monitor(db,api):
  for sym,q in quotes.items():
   ok,why=valid_quote(q,t);quote_rows.append({'symbol':sym,'price':q.get('price'),'quote_at':q.get('quote_at'),'accepted':ok,'reason':why,'request_started_at':request_started,'response_received_at':t})
  for i in range(0,len(quote_rows),50):al.emit(sys.modules[__name__],db,'quote_checks',rows=quote_rows[i:i+50],count=len(quote_rows[i:i+50]))
- audit_quotes(db,quotes,t);fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
+ audit_quotes(db,quotes,t)
+ opens={sym:q['open'] for sym,q in quotes.items() if isinstance(q,dict) and isinstance(q.get('open'),(int,float)) and not isinstance(q.get('open'),bool) and q['open']>0}
+ ca.apply(sys.modules[__name__],db,t.date().isoformat(),opens)
+ positions=db.positions();fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
  # Exits run before entries so a close frees a sleeve slot in the same poll. Entries then follow sha256(session, symbol, seed), then strategy 01-07. The 3-strategy ISIN cap is a later task.
  actions=[];position_rows=[]
  for p in positions:

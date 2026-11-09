@@ -21,6 +21,7 @@ class CapitalTests(unittest.TestCase):
         self.assertIn('tiered_slippage', cap.POLICY['enforced'])
         self.assertIn('execution_path', cap.POLICY['enforced'])
         self.assertIn('microstructure_guards', cap.POLICY['enforced'])
+        self.assertIn('corporate_actions', cap.POLICY['enforced'])
         self.assertNotIn('execution_path', cap.POLICY['recorded_not_yet_enforced'])
         self.assertFalse(cap.POLICY['slippage_stress'])
         self.assertNotIn('sleeve_cash', cap.POLICY['recorded_not_yet_enforced'])

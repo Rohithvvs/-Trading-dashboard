@@ -45,7 +45,7 @@ The engine is not installed on the bot box.
 
 ## Task Group F — corporate actions
 
-- [ ] Split/bonus scaling, fractional cash credit, dividends, manual review
+- [x] Split/bonus scaling, fractional cash credit, dividends, manual review. Quantity is floored. The fractional share is credited once the post-adjustment open exists. Cash dividends do not scale prices. Rights, demergers, and mergers stay `CORP_ACTION_MANUAL_REVIEW`. Credits are visible to `INSUFFICIENT_CASH`.
 
 ## Task Group G — kill and pause
 

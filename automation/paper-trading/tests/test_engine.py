@@ -314,4 +314,51 @@ class PaperTests(unittest.TestCase):
   api.get=get;api.quotes(['X'+str(i)+'-EQ' for i in range(101)]);self.assertEqual([len(x) for x in calls],[50,50,1])
  def test_real_order_routes_absent(self):
   self.assertEqual(set(e.AUTH_ROUTES),{'quotes','history'});self.assertTrue(e.CFG['paper_only']);self.assertEqual(e.cap.POLICY['target_notional_inr'],50000)
+ def test_corporate_actions_scale_state_credit_cash_and_leave_rights(self):
+  import corporate_actions as ca
+  self.assertEqual(ca.scale_paise(10000,3,2),6667);self.assertEqual(ca.scale_paise(20000,2,1),10000)
+  at=T.isoformat();day='2026-11-09'
+  def pos(strategy,symbol,qty,price):return ('INSERT INTO paper_positions(namespace,strategy,symbol,qty,entry_price,entry_at,high_water,mark_price,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',(e.NS,strategy,symbol,qty,price,at,price,price,at))
+  def action(symbol,kind,num,den,cash):return ('INSERT INTO paper_corporate_actions(symbol,ex_date,kind,ratio_num,ratio_den,cash_paise,source,recorded_at) VALUES(?,?,?,?,?,?,?,?)',(symbol,day,kind,num,den,cash,'TEST',at))
+  self.db.batch([
+   pos(1,'RELIANCE-EQ',5,100),pos(1,'TCS-EQ',10,200),pos(1,'INFY-EQ',4,100),pos(1,'HDFCBANK-EQ',4,200),pos(1,'ICICIBANK-EQ',3,50),pos(1,'SBIN-EQ',1,90),pos(1,'WIPRO-EQ',2,80),
+   ('INSERT INTO paper_indicator_state(namespace,strategy,symbol,upperband,lowerband,prev_close,updated_at) VALUES(?,?,?,?,?,?,?)',(e.NS,1,'RELIANCE-EQ',90,70,80,at)),
+   action('RELIANCE-EQ','SPLIT',3,2,None),action('TCS-EQ','SPLIT',2,1,None),action('INFY-EQ','CASH_DIVIDEND',None,None,250),action('HDFCBANK-EQ','EXTRAORDINARY_DIVIDEND',2,1,100),action('ICICIBANK-EQ','RIGHTS',None,None,None),action('SBIN-EQ','BONUS',1,3,None),action('WIPRO-EQ','BONUS',None,None,None)])
+  ca.apply(e,self.db,day)
+  rel=self.db.query('SELECT qty,entry_price,high_water,mark_price FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'RELIANCE-EQ'))[0]
+  self.assertEqual(rel['qty'],7);self.assertEqual(round(rel['entry_price'],2),66.67);self.assertEqual(round(rel['high_water'],2),66.67);self.assertEqual(round(rel['mark_price'],2),66.67)
+  bands=self.db.query('SELECT upperband,lowerband,prev_close FROM paper_indicator_state WHERE namespace=? AND symbol=?',(e.NS,'RELIANCE-EQ'))[0]
+  self.assertEqual(round(bands['upperband'],2),60.00);self.assertEqual(round(bands['lowerband'],2),46.67);self.assertEqual(round(bands['prev_close'],2),53.33)
+  self.assertFalse(self.db.query("SELECT 1 FROM paper_cash_credits WHERE namespace=? AND kind='FRACTIONAL_OPEN'",(e.NS,)))
+  scale=self.db.query('SELECT old_qty,new_qty,fraction_num,fraction_den FROM paper_state_scales WHERE namespace=? AND symbol=? AND kind=?',(e.NS,'RELIANCE-EQ','SPLIT'))[0]
+  self.assertEqual((scale['old_qty'],scale['new_qty'],scale['fraction_num'],scale['fraction_den']),(5,7,1,2))
+  whole=self.db.query('SELECT qty,entry_price FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'TCS-EQ'))[0]
+  self.assertEqual(whole['qty'],20);self.assertEqual(round(whole['entry_price'],2),100.00)
+  self.assertEqual(self.db.query('SELECT fraction_num FROM paper_state_scales WHERE namespace=? AND symbol=?',(e.NS,'TCS-EQ'))[0]['fraction_num'],0)
+  ca.apply(e,self.db,day,{'RELIANCE-EQ':80});ca.apply(e,self.db,day,{'RELIANCE-EQ':80})
+  credits=self.db.query('SELECT kind,amount_paise,symbol FROM paper_cash_credits WHERE namespace=?',(e.NS,))
+  by={(c['symbol'],c['kind']):c['amount_paise'] for c in credits}
+  self.assertEqual(by[('RELIANCE-EQ','FRACTIONAL_OPEN')],4000)
+  self.assertEqual(by[('INFY-EQ','CASH_DIVIDEND')],1000)
+  self.assertEqual(by[('HDFCBANK-EQ','EXTRAORDINARY_DIVIDEND')],400)
+  self.assertEqual(len([c for c in credits if c['kind']=='FRACTIONAL_OPEN']),1)
+  infy=self.db.query('SELECT qty,entry_price FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'INFY-EQ'))[0]
+  self.assertEqual((infy['qty'],infy['entry_price']),(4,100))
+  extra=self.db.query('SELECT qty,entry_price FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'HDFCBANK-EQ'))[0]
+  self.assertEqual(extra['qty'],8);self.assertEqual(round(extra['entry_price'],2),100.00)
+  rights=self.db.query('SELECT qty,entry_price FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'ICICIBANK-EQ'))[0]
+  self.assertEqual((rights['qty'],rights['entry_price']),(3,50))
+  self.assertEqual(self.db.query('SELECT qty FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'SBIN-EQ'))[0]['qty'],1)
+  self.assertEqual(self.db.query('SELECT qty FROM paper_positions WHERE namespace=? AND symbol=?',(e.NS,'WIPRO-EQ'))[0]['qty'],2)
+  self.assertEqual(len(self.db.query('SELECT 1 FROM paper_manual_reviews WHERE namespace=? AND symbol IN (?,?,?)',(e.NS,'ICICIBANK-EQ','SBIN-EQ','WIPRO-EQ'))),3)
+  causes={row['cause'] for row in self.db.query('SELECT cause FROM paper_decisions WHERE namespace=?',(e.NS,))}
+  self.assertEqual(causes,{'STATE_SCALING','CASH_CREDITED','CORP_ACTION_MANUAL_REVIEW'})
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+  self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900004,'2026-11-06',2,'AXISBANK-EQ','INE238A01034','BUY',49950000,'FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_07_v1','{}',0,'2026-11-06T10:00:00+05:30',-49950000,-49950000))])
+  blocked=self.signal(symbol='AXISBANK-EQ',strategy=2);missed=e.fill(self.db,blocked,{'symbol':'AXISBANK-EQ','price':100,'quote_at':at},T)
+  self.assertEqual(missed['reason'],'INSUFFICIENT_CASH')
+  self.db.batch([('INSERT INTO paper_cash_credits(namespace,strategy,symbol,ex_date,kind,amount_paise,recorded_at) VALUES(?,?,?,?,?,?,?)',(e.NS,2,'AXISBANK-EQ',day,'CASH_DIVIDEND',10000000,at))])
+  funded=e.fill(self.db,blocked,{'symbol':'AXISBANK-EQ','price':100,'quote_at':at},T)
+  self.assertTrue(funded['filled']);self.assertEqual(funded['qty'],500)
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
 if __name__=='__main__':unittest.main(verbosity=2)

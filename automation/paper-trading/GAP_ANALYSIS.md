@@ -6,7 +6,7 @@ Sources: Implementation Action Plan `1D9BKMAUvEskfOUNzAav42AcKlzmuVIneNQ1C7QTP7B
 
 Locked numbers are not open for change: master ₹35,00,000, sleeve ₹5,00,000 × 7, target notional ₹50,000, 9 positions per sleeve, 3 strategies per ISIN, entry order exits then `sha256(session date, symbol, freeze_capital_v1)` then strategies 01–07.
 
-Status: Task Groups A–E are implemented on `freeze-strategies-upgrade`. The ₹10 crore ADV floor is still `pending_funnel_report`. Nothing is installed on the bot box. Groups F–I, acceptance, and the support agent remain. BE/BZ exit slippage uses the locked 1.5 stress multiplier because the freeze requires higher exit slippage and does not give a separate rate.
+Status: Task Groups A–F are implemented on `freeze-strategies-upgrade`. The ₹10 crore ADV floor is still `pending_funnel_report`. Nothing is installed on the bot box. Groups G–I, acceptance, and the support agent remain. BE/BZ exit slippage uses the locked 1.5 stress multiplier because the freeze requires higher exit slippage and does not give a separate rate. Split and bonus prices use half-up paise. A fractional share waits for the post-adjustment open.
 
 ## Strategy 07 trailing stop
 
@@ -45,7 +45,6 @@ Leave these alone except where a later task says to extend them.
 - Group C: lagged 20-day median ADV floor (do not freeze the ₹10 crore cutoff until the funnel report is reviewed); participation cap `ADV_PARTICIPATION_CAP` on entries only; tiered slippage and 1.5× stress.
 - Group D: official open or tagged `FALLBACK_OPEN`; bhavcopy comparison; path selected per fill.
 - Group E: directional circuits, `pending_exit`, upper-circuit buy expiry at t+1, EQ→BE/BZ, ASM/GSM, gap-aware stops.
-- Group F: split/bonus state scaling, fractional-share cash credit, dividend rules, `CORP_ACTION_MANUAL_REVIEW`.
 - Group G: 10% sleeve pause, 30-trade net-average UCB, shadow tracking, hysteresis, 8% system pause, reinstatement within 3% of the pre-pause peak, peak reset.
 - Group H: bar-only Strategy 07 stop, version, evidence-clock reset.
 - Group I: ADV funnel and overlap matrix, Muhurat excluded from indicators, public gross/survivorship labels, headline P&L from the capped ledger.
