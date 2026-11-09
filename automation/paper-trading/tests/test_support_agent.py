@@ -83,6 +83,46 @@ class SupportAgentTests(unittest.TestCase):
         self.assertEqual(third['checkpoint']['last_event_id'], 'e2')
         self.assertEqual(third['checkpoint']['last_decision_seq'], 1)
 
+    def test_a3_all_seven_detectors_fire_without_invented_timeout_or_trading_writes(self):
+        self.assertIsNone(sa.INCOMPLETE_LIFECYCLE_MINUTES)
+        day = '2026-11-09'
+        self.db.batch([
+            # coverage_gap: completed scan with only 1 prefilter symbol (<751)
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,symbol,data_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'cg1', 'scan-run-1', day, '2026-11-09T09:15:00+00:00', '2026-11-09T09:15:01+00:00', 'prefilter_decision', 'INFO', 'PASS', 'RELIANCE-EQ', '{}')),
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'cg2', 'scan-run-1', day, '2026-11-09T09:15:02+00:00', '2026-11-09T09:15:03+00:00', 'scan_completed', 'INFO', 'ok', '{}')),
+            # incomplete_lifecycle: order attempt with no result or decision
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,signal_id,data_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'il1', 'mon-run-1', day, '2026-11-09T09:20:00+00:00', '2026-11-09T09:20:01+00:00', 'paper_order_attempt', 'INFO', 'ok', 'orphan-sig', '{"correlation_id":"orphan-sig"}')),
+            # monitor_staleness: two monitor_completed events 300s apart (>120s)
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'ms1', 'mon-1', day, '2026-11-09T09:30:00+00:00', '2026-11-09T09:30:01+00:00', 'monitor_completed', 'INFO', 'ok', '{"status":"ok"}')),
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'ms2', 'mon-2', day, '2026-11-09T09:35:00+00:00', '2026-11-09T09:35:01+00:00', 'monitor_completed', 'INFO', 'ok', '{"status":"ok"}')),
+            # unexpected_skip + placeholder_text + reconstruction_failure (broken hash)
+            ('INSERT INTO paper_decisions(namespace,seq,correlation_id,decision_type,strategy,symbol,signal_id,cause,rule,execution_path,source_at,recorded_at,prev_hash,entry_hash,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 1, 'bad-skip-1', 'SKIP', 1, 'RELIANCE-EQ', 'bad-skip-1', 'MYSTERY_SKIP_CAUSE', 'todo_rule', 'FEED_OPEN', '2026-11-09T09:40:00+00:00', '2026-11-09T09:40:00+00:00', '0'*64, 'wrong_hash', '{"note":"TODO fix placeholder"}')),
+        ])
+        res = sa.run_detectors(self.db, 'test_ns', day)
+        self.assertGreaterEqual(res['findings_created'], 7)
+        findings = sa.current_findings(self.db, 'test_ns', day)
+        detectors = {f['detector'] for f in findings}
+        self.assertEqual(detectors, {
+            'coverage_gap',
+            'incomplete_lifecycle',
+            'unexpected_skip',
+            'placeholder_text',
+            'reconstruction_failure',
+            'monitor_staleness',
+            'named_cause_dump',
+        })
+        il = next(f for f in findings if f['detector'] == 'incomplete_lifecycle')
+        self.assertIsNone(il['details']['incomplete_lifecycle_timeout_minutes'])
+        # Idempotent on second run
+        again = sa.run_detectors(self.db, 'test_ns', day)
+        self.assertEqual(again['findings_created'], 0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

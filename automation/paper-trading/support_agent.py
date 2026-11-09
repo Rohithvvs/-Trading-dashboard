@@ -6,11 +6,41 @@ and support_checkpoints.
 Findings are append-only; status transitions (OPEN, ACKNOWLEDGED, RESOLVED, WONT_FIX)
 insert new rows with incrementing status_seq and never update or delete prior rows.
 """
-import hashlib, json
+import hashlib, json, re
 from datetime import datetime, timezone
+import reconciliation as rec
 
 VALID_STATUSES = ('OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'WONT_FIX')
 VALID_SEVERITIES = ('INFO', 'WARN', 'ERROR', 'CRITICAL')
+INCOMPLETE_LIFECYCLE_MINUTES = None
+
+EXPECTED_SKIP_CAUSES = rec.NAMED_CAUSES | frozenset({
+    'not_pending',
+    'position_guard',
+    'missing_or_failed_current_prefilter_proof',
+    'position_identity_guard',
+    'same_bar_reentry_guard',
+    'not_yet_eligible',
+    'expired_entry_signal',
+    'nonpositive_price',
+    'stale_or_future_quote',
+    'market_closed_or_unverified',
+    'provider_quote_error',
+    'nonpositive_or_missing_price',
+    'missing_exchange_timestamp',
+    'quote_outside_verified_session',
+})
+
+PLACEHOLDER_PATTERN = re.compile(r'(\bTODO\b|\bFIXME\b|\bTBD\b|\bPLACEHOLDER_TEXT\b|\[redacted\]|\bunclassified_condition\b)', re.IGNORECASE)
+GENESIS = '0' * 64
+
+
+def _stable_json(v):
+    if isinstance(v, list):
+        return '[' + ','.join(_stable_json(x) for x in v) + ']'
+    if isinstance(v, dict):
+        return '{' + ','.join(json.dumps(k) + ':' + _stable_json(v[k]) for k in sorted(v.keys())) + '}'
+    return json.dumps(None if v is None else v)
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS support_findings(namespace TEXT NOT NULL,finding_id TEXT NOT NULL,status_seq INTEGER NOT NULL,detector TEXT NOT NULL,correlation_id TEXT NOT NULL,first_event_at TEXT NOT NULL,session_day TEXT NOT NULL,severity TEXT NOT NULL CHECK(severity IN('INFO','WARN','ERROR','CRITICAL')),status TEXT NOT NULL CHECK(status IN('OPEN','ACKNOWLEDGED','RESOLVED','WONT_FIX')),observation_only INTEGER NOT NULL DEFAULT 1,notified INTEGER NOT NULL DEFAULT 0,details_json TEXT NOT NULL,recorded_at TEXT NOT NULL,PRIMARY KEY(namespace,finding_id,status_seq));
 CREATE INDEX IF NOT EXISTS support_findings_session_idx ON support_findings(namespace,session_day,finding_id,status_seq);
@@ -191,4 +221,216 @@ def consume_checkpoint(db, namespace, batch_limit=500, recorded_at=None):
             'last_decision_seq': next_seq,
         },
     }
+
+
+def verify_decision_reconstruction(decisions):
+    """Verify hash-chain integrity and reconstructability of paper_decisions rows."""
+    prev = GENESIS
+    failures = []
+    for row in sorted(decisions, key=lambda r: int(r['seq'])):
+        seq = int(row['seq'])
+        try:
+            payload = json.loads(row['payload_json'])
+        except Exception:
+            failures.append({'seq': seq, 'correlation_id': row.get('correlation_id'), 'source_at': row.get('source_at'), 'reason': 'invalid_payload_json'})
+            prev = str(row.get('entry_hash') or '')
+            continue
+        body = {
+            'namespace': row['namespace'],
+            'seq': seq,
+            'correlation_id': row['correlation_id'],
+            'decision_type': row['decision_type'],
+            'strategy': row.get('strategy'),
+            'symbol': row.get('symbol'),
+            'signal_id': row.get('signal_id'),
+            'cause': row.get('cause'),
+            'rule': row.get('rule'),
+            'execution_path': row.get('execution_path'),
+            'source_at': row['source_at'],
+            'recorded_at': row['recorded_at'],
+            'payload': payload,
+        }
+        expected = hashlib.sha256((prev + '\n' + _stable_json(body)).encode('utf8')).hexdigest()
+        if row.get('prev_hash') != prev or row.get('entry_hash') != expected:
+            failures.append({'seq': seq, 'correlation_id': row.get('correlation_id'), 'source_at': row.get('source_at'), 'reason': 'hash_chain_mismatch'})
+        missing = [k for k in ('correlation_id', 'decision_type', 'cause', 'rule', 'execution_path', 'source_at') if not row.get(k)]
+        if row.get('decision_type') in ('ENTRY', 'EXIT') and ('price' not in payload or 'quantity' not in payload):
+            missing.append('entry_exit_price_or_quantity')
+        if missing:
+            failures.append({'seq': seq, 'correlation_id': row.get('correlation_id'), 'source_at': row.get('source_at'), 'reason': 'missing_reconstruction_fields', 'fields': missing})
+        prev = str(row.get('entry_hash') or '')
+    return failures
+
+
+def run_detectors(db, namespace, session_day, observation_only=True, stale_threshold_seconds=120, recorded_at=None):
+    """Run the 7 deterministic support detectors (read-only on trading tables)."""
+    if INCOMPLETE_LIFECYCLE_MINUTES is not None:
+        raise RuntimeError('incomplete_lifecycle_minutes_must_not_be_invented')
+    session_day = str(session_day)
+    events = db.query('SELECT * FROM paper_events WHERE namespace=? AND session_day=? ORDER BY recorded_at,event_id', (namespace, session_day))
+    all_decisions = db.query('SELECT * FROM paper_decisions WHERE namespace=? ORDER BY seq', (namespace,))
+    day_decisions = [d for d in all_decisions if str(d.get('source_at') or '')[:10] == session_day or str(d.get('recorded_at') or '')[:10] == session_day]
+    if not day_decisions and all_decisions:
+        day_decisions = all_decisions
+    created = []
+
+    def record(detector, cid, first_at, severity, details):
+        res = append_finding(
+            db, namespace, detector, cid, first_at, session_day,
+            severity=severity, status='OPEN', details=details,
+            observation_only=observation_only, notified=False, recorded_at=recorded_at,
+        )
+        created.append({**res, 'detector': detector, 'correlation_id': cid})
+
+    # 1. coverage_gap
+    scan_runs = {}
+    for ev in events:
+        rid = ev['run_id']
+        sr = scan_runs.setdefault(rid, {'first_at': ev['source_at'], 'prefilter': set(), 'strategy_cells': 0, 'completed': False})
+        if ev['event_type'] == 'prefilter_decision' and ev.get('symbol'):
+            sr['prefilter'].add(ev['symbol'])
+        elif ev['event_type'] == 'strategy_decisions':
+            try:
+                sr['strategy_cells'] += len(json.loads(ev.get('data_json') or '{}').get('decisions', []))
+            except Exception:
+                pass
+        elif ev['event_type'] == 'scan_completed':
+            sr['completed'] = True
+    for rid, sr in scan_runs.items():
+        if sr['completed'] and (len(sr['prefilter']) < 751 or sr['strategy_cells'] < 5257):
+            record('coverage_gap', rid, sr['first_at'], 'WARN', {
+                'run_id': rid,
+                'prefilter_symbols': len(sr['prefilter']),
+                'expected_symbols': 751,
+                'strategy_cells': sr['strategy_cells'],
+                'expected_strategy_cells': 5257,
+            })
+
+    # 2. incomplete_lifecycle (no numeric minute timeout invented)
+    attempts = {}
+    resolved_orders = set()
+    runs_started = {}
+    runs_finished = set()
+    for ev in events:
+        cid = event_correlation_id(ev)
+        et = ev['event_type']
+        if et == 'paper_order_attempt':
+            attempts.setdefault(cid, ev['source_at'])
+        elif et in ('paper_order_result', 'paper_order_executed', 'paper_order_blocked'):
+            resolved_orders.add(cid)
+        elif et == 'run_started':
+            runs_started.setdefault(ev['run_id'], ev['source_at'])
+        elif et in ('run_completed', 'run_failed'):
+            runs_finished.add(ev['run_id'])
+    for dec in day_decisions:
+        resolved_orders.add(str(dec['correlation_id']))
+    for cid, first_at in attempts.items():
+        if cid not in resolved_orders:
+            record('incomplete_lifecycle', cid, first_at, 'ERROR', {
+                'kind': 'order_attempt_without_decision_or_result',
+                'incomplete_lifecycle_timeout_minutes': INCOMPLETE_LIFECYCLE_MINUTES,
+                'timeout_source': 'not_numeric_in_plan_not_invented',
+            })
+    for rid, first_at in runs_started.items():
+        if rid not in runs_finished:
+            record('incomplete_lifecycle', rid, first_at, 'WARN', {
+                'kind': 'run_started_without_completion',
+                'incomplete_lifecycle_timeout_minutes': INCOMPLETE_LIFECYCLE_MINUTES,
+                'timeout_source': 'not_numeric_in_plan_not_invented',
+            })
+
+    # 3. unexpected_skip
+    for dec in day_decisions:
+        if dec.get('decision_type') == 'SKIP' and dec.get('cause') not in EXPECTED_SKIP_CAUSES:
+            record('unexpected_skip', str(dec['correlation_id']), str(dec['source_at']), 'WARN', {
+                'cause': dec.get('cause'),
+                'rule': dec.get('rule'),
+                'symbol': dec.get('symbol'),
+                'strategy': dec.get('strategy'),
+            })
+    for ev in events:
+        if ev['event_type'] == 'paper_order_blocked' and ev.get('outcome') not in EXPECTED_SKIP_CAUSES:
+            record('unexpected_skip', event_correlation_id(ev), str(ev['source_at']), 'WARN', {
+                'outcome': ev.get('outcome'),
+                'event_id': ev['event_id'],
+            })
+
+    # 4. placeholder_text
+    for dec in day_decisions:
+        raw = str(dec.get('payload_json') or '')
+        m = PLACEHOLDER_PATTERN.search(raw)
+        if m:
+            record('placeholder_text', str(dec['correlation_id']), str(dec['source_at']), 'WARN', {
+                'source': 'paper_decisions',
+                'matched': m.group(0),
+                'seq': int(dec['seq']),
+            })
+    for ev in events:
+        raw = str(ev.get('data_json') or '')
+        m = PLACEHOLDER_PATTERN.search(raw)
+        if m:
+            record('placeholder_text', event_correlation_id(ev), str(ev['source_at']), 'WARN', {
+                'source': 'paper_events',
+                'matched': m.group(0),
+                'event_id': ev['event_id'],
+            })
+
+    # 5. reconstruction_failure
+    for fail in verify_decision_reconstruction(all_decisions):
+        cid = str(fail.get('correlation_id') or f"seq:{fail['seq']}")
+        first_at = str(fail.get('source_at') or f'{session_day}T00:00:00+00:00')
+        record('reconstruction_failure', cid, first_at, 'CRITICAL', fail)
+
+    # 6. monitor_staleness
+    check_times = []
+    for ev in events:
+        if ev['event_type'] == 'monitor_completed':
+            try:
+                check_times.append((datetime.fromisoformat(str(ev['source_at']).replace('Z', '+00:00')), ev))
+            except Exception:
+                pass
+        elif ev['event_type'] == 'guardian_check':
+            try:
+                lag = json.loads(ev.get('data_json') or '{}').get('heartbeat_lag_seconds')
+                if isinstance(lag, (int, float)) and lag > stale_threshold_seconds:
+                    record('monitor_staleness', ev['run_id'], str(ev['source_at']), 'WARN', {
+                        'heartbeat_lag_seconds': lag,
+                        'threshold_seconds': stale_threshold_seconds,
+                    })
+            except Exception:
+                pass
+    check_times.sort(key=lambda x: x[0])
+    for (t1, _), (t2, ev2) in zip(check_times, check_times[1:]):
+        gap = (t2 - t1).total_seconds()
+        if gap > stale_threshold_seconds:
+            record('monitor_staleness', ev2['run_id'], str(ev2['source_at']), 'WARN', {
+                'gap_seconds': gap,
+                'threshold_seconds': stale_threshold_seconds,
+            })
+
+    # 7. named_cause_dump
+    cause_counts = {}
+    unmapped_causes = []
+    for dec in day_decisions:
+        c = str(dec.get('cause') or 'NONE')
+        cause_counts[c] = cause_counts.get(c, 0) + 1
+        if c != 'filled' and c != 'reinstated' and c not in EXPECTED_SKIP_CAUSES:
+            unmapped_causes.append(c)
+    if day_decisions or events:
+        first_at = (day_decisions[0]['source_at'] if day_decisions else events[0]['source_at'])
+        record('named_cause_dump', f'named_cause_dump:{session_day}', str(first_at), 'INFO', {
+            'session_day': session_day,
+            'cause_counts': cause_counts,
+            'unmapped_causes': sorted(set(unmapped_causes)),
+            'total_decisions': len(day_decisions),
+        })
+
+    return {
+        'namespace': namespace,
+        'session_day': session_day,
+        'findings_evaluated': len(created),
+        'findings_created': sum(1 for x in created if x['created']),
+        'results': created,
+    }
+
 
