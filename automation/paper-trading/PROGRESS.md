@@ -49,7 +49,7 @@ The engine is not installed on the bot box.
 
 ## Task Group G — kill and pause
 
-- [ ] 10% sleeve, 30-trade UCB, shadow hysteresis, 8% system, 3% reinstatement
+- [x] 10% sleeve drawdown on the shadow book, 30-trade one-sided 95% UCB (the freeze does not name the critical value), strategies 03 and 05 are drawdown-only. Pause blocks new entries and still allows exits. Shadow entries continue and do not consume the ISIN cap. Strategy reinstatement is manual only: hysteresis N is not in the freeze, so it is not invented. System pause is 8% of the capped book and reinstates within 3% of the pre-pause peak, or by manual override. Peak resets on reinstatement.
 
 ## Task Group H — Strategy 07
 

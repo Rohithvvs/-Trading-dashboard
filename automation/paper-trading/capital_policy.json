@@ -27,6 +27,15 @@
   "slippage_participation_multiplier_bps": 10,
   "slippage_stress_multiplier": 1.5,
   "slippage_stress": false,
-  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap", "tiered_slippage", "execution_path", "microstructure_guards", "corporate_actions"],
+  "sleeve_pause_drawdown": 0.1,
+  "system_pause_drawdown": 0.08,
+  "system_reinstatement_gap": 0.03,
+  "ucb_closed_trades": 30,
+  "ucb_one_sided_z": 1.6448536269514722,
+  "ucb_z_source": "one_sided_normal_95_not_named_in_freeze",
+  "hysteresis_shadow_trades": null,
+  "drawdown_only_strategies": [3, 5],
+  "strategy_pause_cause": "KILL_PAUSE",
+  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap", "tiered_slippage", "execution_path", "microstructure_guards", "corporate_actions", "kill_pause"],
   "recorded_not_yet_enforced": []
 }

@@ -361,4 +361,46 @@ class PaperTests(unittest.TestCase):
   funded=e.fill(self.db,blocked,{'symbol':'AXISBANK-EQ','price':100,'quote_at':at},T)
   self.assertTrue(funded['filled']);self.assertEqual(funded['qty'],500)
   self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_pause_blocks_entries_keeps_exits_and_reinstates_the_system(self):
+  import pauses as pz
+  bought=e.fill(self.db,self.signal(),self.quote(),T);self.assertTrue(bought['filled'])
+  self.assertEqual(self.db.query('SELECT qty FROM paper_shadow_positions WHERE namespace=? AND strategy=1 AND symbol=?',(e.NS,'RELIANCE-EQ'))[0]['qty'],500)
+  at=T.isoformat()
+  self.db.batch([('INSERT INTO paper_pause_state(namespace,scope,strategy,paused,cause,peak_paise,pre_pause_peak_paise,baseline_day,paused_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(e.NS,'strategy',1,1,'sleeve_drawdown_exceeds_10pct',50000000,50000000,'',at,at))])
+  sold=e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertTrue(sold['filled'])
+  self.assertFalse(self.db.query('SELECT 1 FROM paper_shadow_positions WHERE namespace=? AND strategy=1 AND symbol=? AND qty>0',(e.NS,'RELIANCE-EQ')))
+  self.assertEqual(len(self.db.query("SELECT 1 FROM paper_closed_trades WHERE namespace=? AND book='capped' AND strategy=1",(e.NS,))),1)
+  self.assertEqual(len(self.db.query("SELECT 1 FROM paper_closed_trades WHERE namespace=? AND book='shadow' AND strategy=1",(e.NS,))),1)
+  skipped=self.signal(symbol='TCS-EQ');blocked=e.fill(self.db,skipped,{'symbol':'TCS-EQ','price':100,'quote_at':at},T)
+  self.assertEqual(blocked['reason'],'KILL_PAUSE');self.assertTrue(blocked['shadow_recorded']);self.assertEqual(blocked['pause_cause'],'sleeve_drawdown_exceeds_10pct')
+  self.assertFalse(self.db.query('SELECT 1 FROM paper_positions WHERE namespace=? AND strategy=1 AND symbol=? AND qty>0',(e.NS,'TCS-EQ')))
+  self.assertEqual(self.db.query('SELECT qty FROM paper_shadow_positions WHERE namespace=? AND strategy=1 AND symbol=?',(e.NS,'TCS-EQ'))[0]['qty'],500)
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,skipped['id']))[0]['status'],'pending')
+  self.assertTrue(e.fill(self.db,self.signal(symbol='TCS-EQ',strategy=2),{'symbol':'TCS-EQ','price':100,'quote_at':at},T)['filled'])
+  self.db.batch([('INSERT INTO paper_shadow_positions(namespace,strategy,symbol,qty,entry_price,entry_at,updated_at) VALUES(?,?,?,?,?,?,?)',(e.NS,2,'INFY-EQ',10,100,at,at))])
+  shadow=e.fill(self.db,self.signal('SELL',symbol='INFY-EQ',strategy=2),{'symbol':'INFY-EQ','price':110,'quote_at':at},T)
+  self.assertTrue(shadow['shadow_closed']);self.assertFalse(self.db.query('SELECT 1 FROM paper_positions WHERE namespace=? AND strategy=2 AND symbol=? AND qty>0',(e.NS,'INFY-EQ')))
+  self.assertFalse(self.db.query('SELECT 1 FROM paper_shadow_positions WHERE namespace=? AND strategy=2 AND symbol=? AND qty>0',(e.NS,'INFY-EQ')))
+  self.db.batch([
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'shadow',4,'2026-11-05',50000000)),
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'shadow',4,'2026-11-06',44000000)),
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'shadow',6,'2026-11-05',50000000)),
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'shadow',6,'2026-11-06',45000000)),
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'capped',0,'2026-11-05',100000000)),
+   ('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'capped',0,'2026-11-06',90000000))])
+  self.assertEqual(pz.evaluate(e,self.db,'2026-11-09',force=True)['status'],'evaluated')
+  self.assertEqual(self.db.query("SELECT cause FROM paper_pause_state WHERE namespace=? AND scope='strategy' AND strategy=4",(e.NS,))[0]['cause'],'sleeve_drawdown_exceeds_10pct')
+  self.assertFalse(self.db.query("SELECT 1 FROM paper_pause_state WHERE namespace=? AND scope='strategy' AND strategy=6 AND paused=1",(e.NS,)))
+  self.assertEqual(self.db.query("SELECT cause FROM paper_pause_state WHERE namespace=? AND scope='system' AND strategy=0",(e.NS,))[0]['cause'],'system_drawdown_exceeds_8pct')
+  system=e.fill(self.db,self.signal(symbol='INFY-EQ',strategy=2),{'symbol':'INFY-EQ','price':100,'quote_at':at},T)
+  self.assertEqual(system['reason'],'KILL_PAUSE');self.assertEqual(system['pause_cause'],'system_drawdown_exceeds_8pct')
+  self.db.batch([('INSERT INTO paper_equity_closes(namespace,book,strategy,day,equity_paise) VALUES(?,?,?,?,?)',(e.NS,'capped',0,'2026-11-12',97000000))])
+  pz.evaluate(e,self.db,'2026-11-12',force=True)
+  restored=self.db.query("SELECT paused,peak_paise,baseline_day FROM paper_pause_state WHERE namespace=? AND scope='system' AND strategy=0",(e.NS,))[0]
+  self.assertEqual(restored['paused'],0);self.assertEqual(restored['peak_paise'],97000000);self.assertEqual(restored['baseline_day'],'2026-11-12')
+  self.assertEqual(self.db.query("SELECT paused FROM paper_pause_state WHERE namespace=? AND scope='strategy' AND strategy=4",(e.NS,))[0]['paused'],1)
+  self.db.batch([('INSERT INTO paper_pause_overrides(namespace,scope,strategy,action,recorded_at) VALUES(?,?,?,?,?)',(e.NS,'strategy',4,'reinstate','2026-11-12T11:00:00+05:30'))])
+  pz.evaluate(e,self.db,'2026-11-12',force=True)
+  self.assertEqual(self.db.query("SELECT paused,baseline_day FROM paper_pause_state WHERE namespace=? AND scope='strategy' AND strategy=4",(e.NS,))[0]['paused'],0)
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
 if __name__=='__main__':unittest.main(verbosity=2)

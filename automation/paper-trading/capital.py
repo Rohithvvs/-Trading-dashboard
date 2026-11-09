@@ -23,7 +23,13 @@ def assert_freeze(policy=None):
     if p['max_positions_per_sleeve'] * p['target_notional_inr'] >= p['sleeve_capital_inr']:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     enforced = p.get('enforced', [])
-    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder', 'adv_participation_cap', 'tiered_slippage', 'execution_path', 'microstructure_guards', 'corporate_actions')):
+    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder', 'adv_participation_cap', 'tiered_slippage', 'execution_path', 'microstructure_guards', 'corporate_actions', 'kill_pause')):
+        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+    if p.get('sleeve_pause_drawdown') != 0.1 or p.get('system_pause_drawdown') != 0.08 or p.get('system_reinstatement_gap') != 0.03:
+        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+    if p.get('ucb_closed_trades') != 30 or p.get('strategy_pause_cause') != 'KILL_PAUSE' or p.get('drawdown_only_strategies') != [3, 5]:
+        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+    if p.get('hysteresis_shadow_trades') is not None:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     if 'execution_path' in p.get('recorded_not_yet_enforced', []):
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
