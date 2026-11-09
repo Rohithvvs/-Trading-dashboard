@@ -11,7 +11,7 @@ Updated: 2026-11-09
 
 ## Implementation Sequence (Section A8 & Section B)
 - [x] Task 1 (A8.1 / A2 / B1): Point-in-time prefilter (`daily_prefilter_universe`) + Bhavcopy `SERIES` archive (multi-year) (`pit_archive.py`, `schema.sql`, `tests/test_pit_archive.py`)
-- [ ] Task 2 (A8.2 / A7 / Logging): Schema with `K_eff`, hashes, net-of-haircut starting equity, and SHA-256 hash-chained skill-enhanced adaptive logging
+- [x] Task 2 (A8.2 / A7 / Logging): Schema with `K_eff`, hashes, net-of-haircut starting equity, and SHA-256 hash-chained skill-enhanced adaptive logging (`schema.sql`, `adaptive_logging.py`, `tests/test_adaptive_schema_logging.py`)
 - [ ] Task 3 (A8.3 / A1 / A2 / A3 / B2): 3-tier engine, independent track capital, tier-specific warm-start lengths (60d / 100–120d), PIT data, net-of-haircut re-baseline, inherited discordant trade split, indicator back-adjustment, and target windows (45d/75d + single +15d extension -> `inconclusive`)
 - [ ] Task 4 (A8.4 / A4 / B3): Trial counting (`K_cand`, `K_eff` linear formula with $\bar{\rho} \le 0.9$) and explicit link to effective critical value in Gate 2
 - [ ] Task 5 (A8.5 / A5 / B3): Paired daily active return $d_t$, HAC $t$-stat, residualized $d_t$ check, Gate 4 binding $\alpha$, and block-bootstrap capital-day expectancy
