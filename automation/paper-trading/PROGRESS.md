@@ -23,7 +23,7 @@ The engine is not installed on the bot box.
 - [x] Max 9 open positions per sleeve, `SLEEVE_SLOT_FULL`, count inside the fill transaction
 - [x] Exits first, then `sha256(session|symbol|freeze_capital_v1)`, then strategy 01–07
 - [x] ISIN cap 3, `ISIN_CAP`
-- [ ] Sleeve cash, `INSUFFICIENT_CASH`
+- [x] Sleeve cash, `INSUFFICIENT_CASH`
 - [ ] Shadow ledger does not consume the ISIN cap
 - [ ] Pro-rata DP
 

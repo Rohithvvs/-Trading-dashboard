@@ -93,6 +93,15 @@ class PaperTests(unittest.TestCase):
   e.monitor(self.db,Feed())
   self.assertEqual(sorted(p['strategy'] for p in self.db.positions()),[1,2,3])
   self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND strategy=4',(e.NS,))[0]['status'],'pending')
+ def test_insufficient_sleeve_cash_keeps_the_entry_pending(self):
+  # ₹4,99,500 already spent in paise. ₹500 remains, which cannot fund a ₹50,000 entry plus fees.
+  self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900001,'2026-11-06',1,'RELIANCE-EQ','INE002A01018','BUY',49950000,'FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_07_v1','{}',0,'2026-11-06T10:00:00+05:30',-49950000,-49950000))])
+  s=self.signal();r=e.fill(self.db,s,self.quote(),T)
+  self.assertFalse(r['filled']);self.assertEqual(r['reason'],'INSUFFICIENT_CASH');self.assertEqual(r['quantity'],0);self.assertLess(r['cash_paise'],r['need_paise'])
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,s['id']))[0]['status'],'pending')
+  self.assertFalse(self.db.query('SELECT * FROM paper_fills WHERE namespace=? AND signal_id=?',(e.NS,s['id'])))
+  self.assertEqual(self.db.query('SELECT cause FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]['cause'],'INSUFFICIENT_CASH')
+  self.assertTrue(e.fill(self.db,self.signal(strategy=2),self.quote(),T)['filled'])
  def test_reject_missing_timestamp(self):self.assertFalse(e.fill(self.db,self.signal(),{'price':100},T)['filled'])
  def test_closed_market(self):
   saturday=datetime(2026,11,7,10,tzinfo=e.IST);self.assertFalse(e.fill(self.db,self.signal(),self.quote(),saturday)['filled'])

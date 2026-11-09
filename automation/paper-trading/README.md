@@ -1,6 +1,6 @@
 # Seven-strategy PAPER session engine — upgrade v2
 
-**No broker orders. No funded account. Long-only, independent virtual position per strategy/stock. Each new entry buys floor(₹50,000 / fill price) shares. A fill price above ₹50,000 is skipped as UNAFFORDABLE_ZERO_SHARES and the signal stays pending for that session. A strategy with 9 open positions skips the next entry as SLEEVE_SLOT_FULL. A fourth strategy on the same symbol is skipped as ISIN_CAP. The signal stays pending, and an exit in the same session can free the slot.** Only Fyers `data/history` and `data/quotes` endpoints are allowlisted. Manual dashboard demonstrations live in a separate table/namespace; this engine never queries them.
+**No broker orders. No funded account. Long-only, independent virtual position per strategy/stock. Each new entry buys floor(₹50,000 / fill price) shares. A fill price above ₹50,000 is skipped as UNAFFORDABLE_ZERO_SHARES and the signal stays pending for that session. A strategy with 9 open positions skips the next entry as SLEEVE_SLOT_FULL. A fourth strategy on the same symbol is skipped as ISIN_CAP. A buy that would spend more than the sleeve's remaining cash is skipped as INSUFFICIENT_CASH. The signal stays pending, and an exit in the same session can free the slot.** Only Fyers `data/history` and `data/quotes` endpoints are allowlisted. Manual dashboard demonstrations live in a separate table/namespace; this engine never queries them.
 
 ## Installation and deployment boundary
 

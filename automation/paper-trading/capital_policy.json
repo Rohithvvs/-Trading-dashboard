@@ -13,7 +13,8 @@
   "zero_share_cause": "UNAFFORDABLE_ZERO_SHARES",
   "sleeve_slot_cause": "SLEEVE_SLOT_FULL",
   "isin_cap_cause": "ISIN_CAP",
+  "sleeve_cash_cause": "INSUFFICIENT_CASH",
   "slot_order_seed": "freeze_capital_v1",
-  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap"],
-  "recorded_not_yet_enforced": ["sleeve_cash", "adv_filter", "adv_participation_cap", "shadow_ledger", "tiered_slippage", "execution_path"]
+  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash"],
+  "recorded_not_yet_enforced": ["adv_filter", "adv_participation_cap", "shadow_ledger", "tiered_slippage", "execution_path"]
 }

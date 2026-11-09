@@ -15,7 +15,7 @@ def assert_freeze(policy=None):
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     if p.get('target_notional_inr') != 50000 or p.get('max_positions_per_sleeve') != 9 or p.get('max_strategies_per_isin') != 3:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('zero_share_cause') != 'UNAFFORDABLE_ZERO_SHARES' or p.get('sleeve_slot_cause') != 'SLEEVE_SLOT_FULL' or p.get('isin_cap_cause') != 'ISIN_CAP':
+    if p.get('zero_share_cause') != 'UNAFFORDABLE_ZERO_SHARES' or p.get('sleeve_slot_cause') != 'SLEEVE_SLOT_FULL' or p.get('isin_cap_cause') != 'ISIN_CAP' or p.get('sleeve_cash_cause') != 'INSUFFICIENT_CASH':
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     if p.get('slot_order_seed') != 'freeze_capital_v1':
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
@@ -23,7 +23,7 @@ def assert_freeze(policy=None):
     if p['max_positions_per_sleeve'] * p['target_notional_inr'] >= p['sleeve_capital_inr']:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     enforced = p.get('enforced', [])
-    if 'integer_share_rounding' not in enforced or 'sleeve_slot_limit' not in enforced or 'isin_cap' not in enforced:
+    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash')):
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     return p
 
