@@ -67,7 +67,7 @@ The engine is not installed on the bot box.
 
 ## Support agent
 
-- [ ] A1 schema
+- [x] A1 schema (`support_findings`, immutable status events via `status_seq`, stable `finding_id`, `support_checkpoints`)
 - [ ] A2 consumer
 - [ ] A3 detectors
 - [ ] A4 reporter
