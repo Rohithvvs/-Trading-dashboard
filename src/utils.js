@@ -1,3 +1,5 @@
+export const HISTORICAL_LABEL='Historical figures are gross (zero costs), survivorship-biased (present-day universe) and not jointly tested across strategies.';
+export const HISTORICAL_SHORT='Gross · survivorship-biased · not jointly tested';
 export const names=['Donchian / Turtle','Supertrend','RSI Pullback','Dual MA','Bollinger Reversion','MACD Trend','52W Momentum'];
 export function number(v,digits=2){return v===null||v===undefined||!Number.isFinite(Number(v))?'—':new Intl.NumberFormat('en-IN',{maximumFractionDigits:digits,minimumFractionDigits:digits}).format(Number(v));}
 export function money(v){return v===null||v===undefined?'—':`₹${number(v)}`;}
