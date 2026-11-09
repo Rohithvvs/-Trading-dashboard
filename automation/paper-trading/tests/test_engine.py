@@ -8,7 +8,7 @@ class PaperTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.db=e.DB(str(e.ROOT/'tests'/'test_')+uuid.uuid4().hex+'.sqlite');e.NS='test_fixture';e.init(cls.db)
-  cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL,turnover REAL)',())]);e.now=lambda:T
+  cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL,volume REAL,turnover REAL)',())]);e.now=lambda:T
  def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T;self.db.batch([('DELETE FROM paper_corporate_actions',()),('DELETE FROM paper_price_bands',())])
  def seed_adv(self,symbol,turnover,sessions=40):
   self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',(symbol,))])
@@ -124,6 +124,20 @@ class PaperTests(unittest.TestCase):
   held=self.signal(symbol='TCS-EQ',strategy=1);self.assertTrue(e.fill(self.db,held,self.quote(),T)['filled'])
   sell=self.signal('SELL',symbol='TCS-EQ',strategy=1);self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',('TCS-EQ',))])
   self.assertTrue(e.fill(self.db,sell,self.quote(110),T)['filled'])
+ def test_adv_uses_close_x_volume_when_turnover_missing_and_skips_muhurat(self):
+  # Stored Fyers turnover equals close*volume; NULL turnover rows use the same derivation instead of failing as history-short.
+  ok=self.signal();short=self.signal(strategy=2)
+  self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',('RELIANCE-EQ',))])
+  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close,volume,turnover) VALUES(?,?,?,?,?)',('RELIANCE-EQ',(T.date()-timedelta(days=i)).isoformat(),100,1500000,None)) for i in range(2,22)])
+  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close,volume,turnover) VALUES(?,?,?,?,?)',('RELIANCE-EQ','2026-11-08',100,10,1000))])
+  r=e.fill(self.db,ok,self.quote(),T)
+  self.assertTrue(r['filled'])
+  payload=json.loads(self.db.query('SELECT payload_json FROM paper_decisions WHERE namespace=? AND correlation_id=? ORDER BY seq DESC LIMIT 1',(e.NS,ok['id']))[0]['payload_json'])
+  self.assertEqual(payload['adv_median_inr'],150000000)
+  # Zero-volume, NULL-turnover rows are not evidence: still history-short, never a fabricated value.
+  self.db.batch([('UPDATE daily_ohlcv SET volume=0 WHERE symbol=? AND trade_date<?',('RELIANCE-EQ','2026-10-25'))])
+  m=e.fill(self.db,short,self.quote(),T)
+  self.assertEqual(m['reason'],'ADV_FILTER_SKIP');self.assertEqual(m['adv_rule'],'lagged_adv_history_short')
  def test_participation_cap_skips_without_scaling_and_still_exits(self):
   # ₹10 crore ADV. 0.005 × ADV = ₹5,00,000. Price 100 buys exactly ₹50,000.
   version=json.loads((e.ROOT/'charge_policy.json').read_text())['version']

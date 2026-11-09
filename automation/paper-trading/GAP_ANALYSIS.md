@@ -2,6 +2,8 @@
 
 Date: 2026-11-09. Repo: `vvsrohith9490870277-stack/-Trading-dashboard`. Core: `automation/paper-trading/`.
 
+> Update 2026-11-09 16:15 IST: funnel/ADV impact, overlap, Stage A replay (6 Nov 100%; 8 Nov all 17 divergences = SPECIAL_SESSION_EXCLUDED) and the live-month blockers are in `reports/FREEZE_FUNNEL_AND_RECONCILIATION_2026-11-09.md`. ADV now uses `COALESCE(turnover, close*volume)` and skips the Muhurat session; the ₹10 crore floor is still `pending_funnel_report`. Dashboard headline P&L now reads the capped master ledger and historical figures carry gross / survivorship-biased / not-jointly-tested labels. Live engine testing: Wednesday 11 Nov 2026 (Tuesday 10 Nov is an NSE holiday).
+
 Sources: Implementation Action Plan `1D9BKMAUvEskfOUNzAav42AcKlzmuVIneNQ1C7QTP7BY`, Freeze Version `1wYCbiCCSCedPEhj_6lMV-gwr0CFG6SARyOX1yY20-oY`, freeze checklists `1TNprAJLI97dwMJkSFFUvrDumspayTA3_OVjyqO2SN_4`, freeze logging spec `1Zo9n9yfpUmtXAV6DNw1iIVtRGkRRcPzjKu5m3ojufqI`, Support Agent plan `1wxsNpjuDTratWW4bbua0YifSj_GK8FYYp9LgZnG_2U0`, support checklists `1mAT2hES_vNwJHXXjZuoXa5wqBYTNRYS0DBfLmoH-GtQ`, support logging spec `1juueVBRskwxHxXcFkZkK9L9yGB_6WP7g_XMvARPKouo`.
 
 Locked numbers are not open for change: master ₹35,00,000, sleeve ₹5,00,000 × 7, target notional ₹50,000, 9 positions per sleeve, 3 strategies per ISIN, entry order exits then `sha256(session date, symbol, freeze_capital_v1)` then strategies 01–07.

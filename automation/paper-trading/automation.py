@@ -144,7 +144,8 @@ def funnel(e,db,bar_date=None):
  syms=sorted({r['symbol'] for r in q_rows});lookback=e.cap.POLICY['adv_lookback_sessions'];floor_paise=e.cap.POLICY['adv_floor_inr']*100;adv_ok={}
  if syms:
   try:
-   ohlcv=db.query('SELECT symbol,trade_date,turnover FROM daily_ohlcv WHERE symbol IN ('+','.join('?' for _ in syms)+') AND trade_date<=? AND turnover IS NOT NULL ORDER BY symbol,trade_date DESC',[ *syms,str(bar)])
+   special=sorted(e.CFG.get('special_sessions',{}));ex=(' AND trade_date NOT IN ('+','.join('?' for _ in special)+')') if special else ''
+   ohlcv=db.query('SELECT symbol,trade_date,COALESCE(turnover,CASE WHEN volume>0 AND close>0 THEN close*volume END) AS turnover FROM daily_ohlcv WHERE symbol IN ('+','.join('?' for _ in syms)+') AND trade_date<=?'+ex+' AND (turnover IS NOT NULL OR (volume>0 AND close>0)) ORDER BY symbol,trade_date DESC',[ *syms,str(bar),*special])
   except Exception:ohlcv=[]
   by_sym={}
   for r in ohlcv:

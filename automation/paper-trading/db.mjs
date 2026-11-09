@@ -4,6 +4,9 @@ import prefilterPolicy from './prefilter_policy.json' with {type:'json'};
 import fs from 'fs';import {createRequire} from 'module';const require=createRequire(import.meta.url);const{createClient}=require('@libsql/client');
 import path from 'node:path';import {fileURLToPath} from 'node:url';import {policy,paise,estimate,allocateOvernightDp,executionSlippage} from './fees.mjs';
 import capitalPolicy from './capital_policy.json' with {type:'json'};
+import engineConfig from './config.json' with {type:'json'};
+// Special sessions (8 Nov 2026 Muhurat) are excluded from the ADV window, matching the indicator exclusion.
+const ADV_EXCLUDED_SESSIONS=Object.keys(engineConfig.special_sessions||{}).sort();
 const a=JSON.parse(fs.readFileSync(0,'utf8'));const root=path.dirname(fileURLToPath(import.meta.url));
 const testRoot=path.resolve(root,'tests')+path.sep+'test_';if(a.test_database&&(!path.resolve(a.test_database).startsWith(testRoot)||!a.test_database.endsWith('.sqlite')))throw Error('invalid_test_path');
 const env={};if(!a.test_database){for(const l of fs.readFileSync(process.env.PAPER_ENV_FILE||'/workspace/sahil-fyers-turso/.env','utf8').split('\n')){const p=l.indexOf('=');if(p>0&&!l.startsWith('#'))env[l.slice(0,p).trim()]=l.slice(p+1).trim().replace(/^(['"])(.*)\1$/,'$2')}}
@@ -56,12 +59,12 @@ async function recordShadowSell(tx,row){
 async function laggedAdv(tx,symbol,day){
  const lookback=capitalPolicy.adv_lookback_sessions;
  let got;
- try{got=rows(await tx.execute({sql:'SELECT turnover FROM daily_ohlcv WHERE symbol=? AND trade_date<? AND turnover IS NOT NULL ORDER BY trade_date DESC LIMIT 20',args:[symbol,day]}));}
+ try{got=rows(await tx.execute({sql:`SELECT trade_date,COALESCE(turnover,CASE WHEN volume>0 AND close>0 THEN close*volume END) AS turnover,CASE WHEN turnover IS NOT NULL THEN 0 ELSE 1 END AS derived FROM daily_ohlcv WHERE symbol=? AND trade_date<?${ADV_EXCLUDED_SESSIONS.length?` AND trade_date NOT IN (${ADV_EXCLUDED_SESSIONS.map(()=>'?').join(',')})`:''} AND (turnover IS NOT NULL OR (volume>0 AND close>0)) ORDER BY trade_date DESC LIMIT 20`,args:[symbol,day,...ADV_EXCLUDED_SESSIONS]}));}
  catch(e){if(/no such table|no such column/i.test(String(e.message||'')))return {ok:false,rule:'lagged_adv_history_short',sessions:0,median_inr:null};throw e;}
  if(got.length<lookback)return {ok:false,rule:'lagged_adv_history_short',sessions:got.length,median_inr:null};
  const paiseValues=got.map(x=>Math.round(Number(x.turnover)*100)).sort((a,b)=>a-b);
  const mid=lookback/2;const median=(paiseValues[mid-1]+paiseValues[mid])/2;const floor=capitalPolicy.adv_floor_inr*100;
- return {ok:median>=floor,rule:'median_20d_traded_value_vs_placeholder_floor',sessions:lookback,median_inr:median/100,median_paise:median};
+ return {ok:median>=floor,rule:'median_20d_traded_value_vs_placeholder_floor',sessions:lookback,derived_close_x_volume_sessions:got.reduce((n,x)=>n+Number(x.derived||0),0),excluded_special_sessions:ADV_EXCLUDED_SESSIONS,median_inr:median/100,median_paise:median};
 }
 try{
 if(a.action==='register_policy'){const val=JSON.stringify(policy);await db.execute({sql:'INSERT OR IGNORE INTO paper_charge_policies(version,policy_json) VALUES(?,?)',args:[policy.version,val]});const r=rows(await db.execute({sql:'SELECT policy_json FROM paper_charge_policies WHERE version=?',args:[policy.version]}))[0];if(r.policy_json!==val)throw Error('immutable_policy_changed');console.log(JSON.stringify({policy_version:policy.version}));}
