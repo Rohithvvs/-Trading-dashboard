@@ -100,7 +100,7 @@ class AtomicAuditTests(unittest.TestCase):
  def setUpClass(cls):fixtures.PaperTests.setUpClass.__func__(cls)
  setUp=fixtures.PaperTests.setUp;signal=fixtures.PaperTests.signal;quote=fixtures.PaperTests.quote
  def test_trade_execution_event_is_atomic_and_idempotent(self):
-  s=self.signal();self.assertTrue(e.fill(self.db,s,self.quote(),fixtures.T)['filled']);self.assertFalse(e.fill(self.db,s,self.quote(),fixtures.T)['filled']);rows=self.db.query("SELECT * FROM paper_events WHERE namespace=? AND event_type='paper_order_executed'",(e.NS,));self.assertEqual(len(rows),1);data=json.loads(rows[0]['data_json']);self.assertEqual(data['quantity'],1);self.assertIn('charge_policy_version',data);self.assertEqual(len(self.db.positions()),1)
+  s=self.signal();self.assertTrue(e.fill(self.db,s,self.quote(),fixtures.T)['filled']);self.assertFalse(e.fill(self.db,s,self.quote(),fixtures.T)['filled']);rows=self.db.query("SELECT * FROM paper_events WHERE namespace=? AND event_type='paper_order_executed'",(e.NS,));self.assertEqual(len(rows),1);data=json.loads(rows[0]['data_json']);self.assertEqual(data['quantity'],500);self.assertIn('charge_policy_version',data);self.assertEqual(len(self.db.positions()),1)
  def test_failed_atomic_audit_rolls_back_fill_and_fee(self):
   self.db.batch([("CREATE TRIGGER fail_event BEFORE INSERT ON paper_events WHEN NEW.event_type='paper_order_executed' BEGIN SELECT RAISE(ABORT,'audit_fail'); END",())])
   try:

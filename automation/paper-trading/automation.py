@@ -36,7 +36,10 @@ def checklist(e,strategy,f):
  return {'data_current':True,'checks':checks,'all_filters_satisfied':bool(x.entry_condition),'rule':e.RULES[str(strategy)].get('entry',e.RULES[str(strategy)].get('long_entry')),'observed_values':clean(x.to_dict())}
 def plan(e,strategy,x):
  r=e.RULES[str(strategy)]
- return {'entry':'First fresh, verified in-session Fyers LTP after eligibility; not guaranteed open price','reference_close':float(x.close),'reference_bar':str(x.trade_date),'fixed_target':None,'exit_rule':r.get('exit',r.get('long_exit')),'stop':'10% below completed-close high-water from actual entry' if strategy==7 else 'No added fixed stop; frozen completed-candle exit rule','indicative_reference_trail':round(float(x.close)*.9,2) if strategy==7 else None,'indicative_not_order_price':True,'quantity':e.CFG['quantity'],'paper_only':True}
+ close=float(x.close)
+ try:indicative=e.cap.integer_shares(close)
+ except ValueError:indicative=None
+ return {'entry':'First fresh, verified in-session Fyers LTP after eligibility; not guaranteed open price','reference_close':close,'reference_bar':str(x.trade_date),'fixed_target':None,'exit_rule':r.get('exit',r.get('long_exit')),'stop':'10% below completed-close high-water from actual entry' if strategy==7 else 'No added fixed stop; frozen completed-candle exit rule','indicative_reference_trail':round(close*.9,2) if strategy==7 else None,'indicative_not_order_price':True,'target_notional_inr':e.cap.POLICY['target_notional_inr'],'share_rounding':'floor_notional_over_fill_price','indicative_shares_at_reference_close':indicative,'paper_only':True}
 
 def finance(e,db):
  t=e.now();day=str(t.date());ps=db.positions();fs=db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy BETWEEN 1 AND 7',(e.NS,));cost=db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,));coh=db.query('SELECT * FROM paper_entry_cohorts WHERE namespace=?',(e.NS,))

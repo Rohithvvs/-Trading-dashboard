@@ -13,11 +13,12 @@ import session_inputs as si
 import audit as al
 import guardian as gd
 import history_repair as hr
+import capital as cap
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
 for folder in ['logs','out','tests']:(ROOT/folder).mkdir(exist_ok=True)
 if CFG.get('paper_only') is not True:raise SystemExit('PAPER_ONLY_MODE_REQUIRED')
-if not isinstance(CFG['quantity'],int) or CFG['quantity']!=1:raise SystemExit('POSITIVE_INTEGER_QUANTITY_REQUIRED')
+cap.assert_freeze()
 NS=CFG['namespace']; AUTH_ROUTES={'quotes':'https://api-t1.fyers.in/data/quotes','history':'https://api-t1.fyers.in/data/history'}
 def now():return datetime.now(IST)
 def js(v):return json.dumps(v,default=str,allow_nan=False)
@@ -142,19 +143,29 @@ def _fill(db,s,q,t):
  ok,why=valid_quote(q,t)
  if not ok:return {'filled':False,'reason':why}
  if s['eligible_date']>t.date().isoformat():return {'filled':False,'reason':'not_yet_eligible'}
+ quantity=1
  if s['side']=='BUY' and not s.get('stop'):
   # A delayed pending entry must not turn into an arbitrarily old new entry.
   eligible=date.fromisoformat(s['eligible_date'])
   if eligible<t.date():
    db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);return {'filled':False,'reason':'expired_entry_signal'}
- r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':CFG['quantity'],'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r);return r
+  try:quantity=cap.integer_shares(q['price'])
+  except ValueError:return {'filled':False,'reason':'nonpositive_price','quantity':0}
+  if quantity<1:
+   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=q['price'],target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
+   return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0}
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
+ if isinstance(r,dict) and r.get('reason')=='SLEEVE_SLOT_FULL':
+  log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='SLEEVE_SLOT_FULL',price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],quantity=0)
+ if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
+ return r
 STRATEGY_SOURCES={2:'02_supertrend/2026-11-07_run/run_strategy2.py',3:'03_rsi_pullback/2026-11-07_run/run_strategy3.py',4:'04_dual_ma/2026-11-07_run/run_strategy4.py',5:'05_bollinger_reversion/2026-11-07_run/run_strategy5.py',6:'06_macd_trend/2026-11-07_run/run_strategy6.py',7:'07_52week_momentum/2026-11-07_run/run_strategy7.py'}
 def fill(db,s,q,t):
  e=sys.modules[__name__];began=now()
  with al.scope(e,db,'paper_order'):
   al.emit(e,db,'paper_order_attempt',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),bar_date=s.get('bar_date'),side=s.get('side'),price=q.get('price') if q else None,quote_at=q.get('quote_at') if q else None)
   r=_fill(db,s,q,t+max(now()-began,timedelta(0)))
-  al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))))
+  al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))),quantity=r.get('quantity'),**({} if r.get('open_positions') is None else {'open_positions':r['open_positions']}))
   return r
 
 def indicator(strategy,g):
@@ -288,6 +299,9 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
   al.emit(e,db,'scan_completed',duration_ms=round((time.monotonic()-start)*1000),**r)
   return r
 
+def entry_priority(day,s):
+ if s.get('side')=='SELL':return (0,0 if s.get('stop') else 1,int(s.get('strategy') or 0),str(s.get('id') or ''))
+ return (1,cap.slot_rank(day,s.get('symbol') or ''),int(s.get('strategy') or 0),str(s.get('id') or ''))
 def _monitor(db,api):
  t=now()
  if not au.active(sys.modules[__name__],t):r={'status':'market_closed_or_calendar_unverified','at_IST':t.isoformat(),'fills':0};db.run('monitor','closed',**r);return r
@@ -302,7 +316,7 @@ def _monitor(db,api):
   ok,why=valid_quote(q,t);quote_rows.append({'symbol':sym,'price':q.get('price'),'quote_at':q.get('quote_at'),'accepted':ok,'reason':why,'request_started_at':request_started,'response_received_at':t})
  for i in range(0,len(quote_rows),50):al.emit(sys.modules[__name__],db,'quote_checks',rows=quote_rows[i:i+50],count=len(quote_rows[i:i+50]))
  audit_quotes(db,quotes,t);fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
- # Every pending exit is processed before entries. Momentum observed-price stop uses actual LTP, never synthetic threshold fill.
+ # Exits run before entries so a close frees a sleeve slot in the same poll. Entries then follow sha256(session, symbol, seed), then strategy 01-07. The 3-strategy ISIN cap is a later task.
  actions=[];position_rows=[]
  for p in positions:
   q=quotes.get(p['symbol']);ok,why=valid_quote(q,t)
@@ -311,7 +325,7 @@ def _monitor(db,api):
    al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=p['symbol'],price=q['price'],quote_at=q['quote_at'],threshold=.9*p['high_water'],reason='observed_stop_crossing',target_defined=False)
    actions.append({'id':stable_id(7,p['symbol'],p['entry_at'],'stop'),'strategy':7,'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True})
  for i in range(0,len(position_rows),50):al.emit(sys.modules[__name__],db,'position_checks',rows=position_rows[i:i+50],count=len(position_rows[i:i+50]))
- actions+=sorted(signals,key=lambda s:0 if s['side']=='SELL' else 1)
+ actions+=signals;day=t.date().isoformat();actions.sort(key=lambda s:entry_priority(day,s))
  for s in actions:
   key=(s['strategy'],s['symbol'])
   if key in used:continue

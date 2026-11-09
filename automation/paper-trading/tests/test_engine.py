@@ -1,4 +1,4 @@
-import sys,unittest,uuid,threading
+import json,sys,unittest,uuid,threading
 from pathlib import Path
 from datetime import datetime,timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -18,8 +18,8 @@ class PaperTests(unittest.TestCase):
  def quote(self,p=100,age=0):return {'symbol':'RELIANCE-EQ','price':p,'quote_at':(T-timedelta(seconds=age)).isoformat()}
  def test_buy_duplicate_exit_and_pnl(self):
   s=self.signal();self.assertTrue(e.fill(self.db,s,self.quote(),T)['filled']);self.assertFalse(e.fill(self.db,s,self.quote(),T)['filled'])
-  out=e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertEqual(out['realized_pnl'],10)
-  p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],10);self.assertEqual(p['latest_known_total_pnl_INR'],10);self.assertEqual(len(self.db.positions()),0)
+  out=e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertEqual(out['realized_pnl'],5000)
+  p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],5000);self.assertEqual(p['latest_known_total_pnl_INR'],5000);self.assertEqual(len(self.db.positions()),0)
  def test_multistock_and_strategy_separation(self):
   for sym,strategy in [('RELIANCE-EQ',1),('RELIANCE-EQ',2),('TCS-EQ',1)]:self.assertTrue(e.fill(self.db,self.signal(symbol=sym,strategy=strategy),self.quote(),T)['filled'])
   self.assertEqual(len(self.db.positions()),3)
@@ -29,6 +29,39 @@ class PaperTests(unittest.TestCase):
  def test_reject_stale(self):self.assertFalse(e.fill(self.db,self.signal(),self.quote(age=61),T)['filled'])
  def test_reject_future(self):self.assertFalse(e.fill(self.db,self.signal(),self.quote(age=-10),T)['filled'])
  def test_reject_zero(self):self.assertFalse(e.fill(self.db,self.signal(),self.quote(0),T)['filled'])
+ def test_target_notional_share_count_and_unaffordable_skip(self):
+  priced=e.fill(self.db,self.signal(),self.quote(2500),T);self.assertTrue(priced['filled']);self.assertEqual(priced['qty'],20)
+  s=self.signal(strategy=2);r=e.fill(self.db,s,self.quote(60000),T);self.assertFalse(r['filled']);self.assertEqual(r['reason'],'UNAFFORDABLE_ZERO_SHARES');self.assertEqual(r['quantity'],0)
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,s['id']))[0]['status'],'pending')
+  self.assertFalse(self.db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy=2',(e.NS,)))
+  rows=self.db.query("SELECT data_json FROM paper_events WHERE namespace=? AND event_type='paper_order_result'",(e.NS,));self.assertTrue(any(json.loads(x['data_json']).get('reason')=='UNAFFORDABLE_ZERO_SHARES' for x in rows))
+  exact=e.fill(self.db,self.signal(strategy=3),self.quote(50000),T);self.assertTrue(exact['filled']);self.assertEqual(exact['qty'],1)
+ def test_sleeve_holds_nine_positions_and_keeps_the_next_entry_pending(self):
+  symbols=['360ONE-EQ','3MINDIA-EQ','ABB-EQ','ACC-EQ','AGI-EQ','AIAENG-EQ','APLAPOLLO-EQ','ASKAUTOLTD-EQ','AUBANK-EQ','AARTIDRUGS-EQ']
+  for sym in symbols[:9]:self.assertTrue(e.fill(self.db,self.signal(symbol=sym,strategy=1),self.quote(),T)['filled'])
+  skipped=self.signal(symbol=symbols[9],strategy=1);r=e.fill(self.db,skipped,self.quote(),T)
+  self.assertFalse(r['filled']);self.assertEqual(r['reason'],'SLEEVE_SLOT_FULL');self.assertEqual(r['quantity'],0);self.assertEqual(r['open_positions'],9)
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,skipped['id']))[0]['status'],'pending')
+  self.assertFalse(self.db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy=1 AND symbol=?',(e.NS,symbols[9])))
+  blocked=self.db.query("SELECT outcome,data_json FROM paper_events WHERE namespace=? AND event_type='paper_order_blocked'",(e.NS,))
+  self.assertTrue(any(x['outcome']=='SLEEVE_SLOT_FULL' and json.loads(x['data_json']).get('open_positions')==9 for x in blocked))
+  self.assertTrue(e.fill(self.db,self.signal(symbol=symbols[9],strategy=2),self.quote(),T)['filled'])
+  self.assertTrue(e.fill(self.db,self.signal('SELL',symbol=symbols[0],strategy=1),self.quote(110),T)['filled'])
+  self.assertTrue(e.fill(self.db,skipped,self.quote(),T)['filled'])
+  self.assertEqual(len([p for p in self.db.positions() if p['strategy']==1]),9)
+ def test_monitor_frees_a_slot_before_entries_and_hashes_the_last_slot(self):
+  symbols=['360ONE-EQ','3MINDIA-EQ','ABB-EQ','ACC-EQ','AGI-EQ','AIAENG-EQ','APLAPOLLO-EQ','ASKAUTOLTD-EQ','AUBANK-EQ']
+  for sym in symbols:self.assertTrue(e.fill(self.db,self.signal(symbol=sym,strategy=1),self.quote(),T)['filled'])
+  contenders=['AARTIDRUGS-EQ','AARTIIND-EQ'];day=T.date().isoformat()
+  winner=min(contenders,key=lambda sym:(e.cap.slot_rank(day,sym),sym));loser=[sym for sym in contenders if sym!=winner][0]
+  sell=self.signal('SELL',symbol=symbols[0],strategy=1);buy=self.signal(symbol=winner,strategy=1);other=self.signal(symbol=loser,strategy=1)
+  class Feed:
+   def quotes(_,requested):return {sym:{'symbol':sym,'price':100,'quote_at':T.isoformat(),'provider_status':'ok'} for sym in requested}
+  report=e.monitor(self.db,Feed());self.assertEqual(report['fills'],2)
+  self.assertFalse(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND strategy=1 AND symbol=? AND qty>0',(e.NS,symbols[0])))
+  self.assertTrue(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND strategy=1 AND symbol=? AND qty>0',(e.NS,winner)))
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,other['id']))[0]['status'],'pending')
+  self.assertEqual(len([p for p in self.db.positions() if p['strategy']==1]),9)
  def test_reject_missing_timestamp(self):self.assertFalse(e.fill(self.db,self.signal(),{'price':100},T)['filled'])
  def test_closed_market(self):
   saturday=datetime(2026,11,7,10,tzinfo=e.IST);self.assertFalse(e.fill(self.db,self.signal(),self.quote(),saturday)['filled'])
@@ -52,7 +85,7 @@ class PaperTests(unittest.TestCase):
   e.fill(self.db,self.signal(strategy=7),self.quote(),T)
   class Feed:
    def quotes(_,symbols):return {'RELIANCE-EQ':self.quote(85)}
-  r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertEqual(fills[-1]['price'],85);self.assertEqual(fills[-1]['realized_pnl'],-15)
+  r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertEqual(fills[-1]['price'],85);self.assertEqual(fills[-1]['realized_pnl'],-7500)
  def test_closed_monitor_no_quotes(self):
   e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST)
   class Feed:
@@ -61,7 +94,7 @@ class PaperTests(unittest.TestCase):
  def test_daily_start_mark_not_entry_basis(self):
   # Position opened during prior special session, cost90; previous completed close100; current mark105.
   yesterday=datetime(2026,11,8,14,30,tzinfo=e.IST);s=self.signal(eligible='2026-11-08');q={'price':90,'quote_at':yesterday.isoformat()};self.assertTrue(e.fill(self.db,s,q,yesterday)['filled'])
-  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close) VALUES(?,?,?)',('RELIANCE-EQ','2026-11-08',100)),('UPDATE paper_positions SET mark_price=?,mark_at=? WHERE namespace=?',(105,T.isoformat(),e.NS))]);p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],5);self.assertEqual(p['latest_known_total_pnl_INR'],15)
+  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close) VALUES(?,?,?)',('RELIANCE-EQ','2026-11-08',100)),('UPDATE paper_positions SET mark_price=?,mark_at=? WHERE namespace=?',(105,T.isoformat(),e.NS))]);p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],2775);self.assertEqual(p['latest_known_total_pnl_INR'],8325)
  def test_pnl_snapshot_idempotent(self):
   e.pnl(self.db);e.pnl(self.db);self.assertEqual(len(self.db.query('SELECT * FROM paper_pnl WHERE namespace=?',(e.NS,))),1)
  def test_stale_marks_labeled(self):
@@ -120,5 +153,5 @@ class PaperTests(unittest.TestCase):
   def get(route,params):calls.append(params['symbols'].split(','));return {'d':[]}
   api.get=get;api.quotes(['X'+str(i)+'-EQ' for i in range(101)]);self.assertEqual([len(x) for x in calls],[50,50,1])
  def test_real_order_routes_absent(self):
-  self.assertEqual(set(e.AUTH_ROUTES),{'quotes','history'});self.assertTrue(e.CFG['paper_only']);self.assertGreater(e.CFG['quantity'],0)
+  self.assertEqual(set(e.AUTH_ROUTES),{'quotes','history'});self.assertTrue(e.CFG['paper_only']);self.assertEqual(e.cap.POLICY['target_notional_inr'],50000)
 if __name__=='__main__':unittest.main(verbosity=2)

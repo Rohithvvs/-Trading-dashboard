@@ -1,0 +1,18 @@
+{
+  "version": "freeze_capital_v1",
+  "effective_from": "2026-11-09",
+  "valid_through": "2026-12-31",
+  "currency": "INR",
+  "master_capital_inr": 3500000,
+  "sleeve_capital_inr": 500000,
+  "strategy_count": 7,
+  "target_notional_inr": 50000,
+  "max_positions_per_sleeve": 9,
+  "max_strategies_per_isin": 3,
+  "share_rounding": "floor_notional_over_fill_price",
+  "zero_share_cause": "UNAFFORDABLE_ZERO_SHARES",
+  "sleeve_slot_cause": "SLEEVE_SLOT_FULL",
+  "slot_order_seed": "freeze_capital_v1",
+  "enforced": ["integer_share_rounding", "sleeve_slot_limit"],
+  "recorded_not_yet_enforced": ["isin_cap", "sleeve_cash", "adv_filter", "adv_participation_cap", "shadow_ledger", "tiered_slippage", "execution_path"]
+}
