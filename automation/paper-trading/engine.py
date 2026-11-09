@@ -163,8 +163,8 @@ def _fill(db,s,q,t):
    decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':q['price'],quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']})
    return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':'LTP_LEGACY'}
  r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':'LTP_LEGACY','strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
- if isinstance(r,dict) and r.get('reason')=='SLEEVE_SLOT_FULL':
-  log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='SLEEVE_SLOT_FULL',price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],quantity=0)
+ if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP'):
+  log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause=r['reason'],price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],max_strategies_per_isin=cap.POLICY['max_strategies_per_isin'],quantity=0)
  if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
  return r
 STRATEGY_SOURCES={2:'02_supertrend/2026-11-07_run/run_strategy2.py',3:'03_rsi_pullback/2026-11-07_run/run_strategy3.py',4:'04_dual_ma/2026-11-07_run/run_strategy4.py',5:'05_bollinger_reversion/2026-11-07_run/run_strategy5.py',6:'06_macd_trend/2026-11-07_run/run_strategy6.py',7:'07_52week_momentum/2026-11-07_run/run_strategy7.py'}

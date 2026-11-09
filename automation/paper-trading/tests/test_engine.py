@@ -76,6 +76,23 @@ class PaperTests(unittest.TestCase):
   decision=self.db.query('SELECT decision_type,cause,execution_path FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]
   self.assertEqual(decision['decision_type'],'SKIP');self.assertEqual(decision['cause'],'UNAFFORDABLE_ZERO_SHARES');self.assertEqual(decision['execution_path'],'LTP_LEGACY')
   self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_isin_cap_skips_the_fourth_strategy_on_the_same_symbol(self):
+  for strategy in (1,2,3):self.assertTrue(e.fill(self.db,self.signal(symbol='RELIANCE-EQ',strategy=strategy),self.quote(),T)['filled'])
+  skipped=self.signal(symbol='RELIANCE-EQ',strategy=4);r=e.fill(self.db,skipped,self.quote(),T)
+  self.assertFalse(r['filled']);self.assertEqual(r['reason'],'ISIN_CAP');self.assertEqual(r['quantity'],0)
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,skipped['id']))[0]['status'],'pending')
+  self.assertFalse(self.db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy=4 AND symbol=?',(e.NS,'RELIANCE-EQ')))
+  self.assertEqual(self.db.query("SELECT cause FROM paper_decisions WHERE namespace=? AND correlation_id=?",(e.NS,skipped['id']))[0]['cause'],'ISIN_CAP')
+  self.assertTrue(e.fill(self.db,self.signal(symbol='TCS-EQ',strategy=4),self.quote(),T)['filled'])
+  self.assertTrue(e.fill(self.db,self.signal('SELL',symbol='RELIANCE-EQ',strategy=1),self.quote(110),T)['filled'])
+  self.assertTrue(e.fill(self.db,skipped,self.quote(),T)['filled'])
+ def test_monitor_admits_strategies_in_order_until_the_isin_cap(self):
+  for strategy in (4,1,3,2):self.signal(symbol='RELIANCE-EQ',strategy=strategy)
+  class Feed:
+   def quotes(_,requested):return {sym:{'symbol':sym,'price':100,'quote_at':T.isoformat(),'provider_status':'ok'} for sym in requested}
+  e.monitor(self.db,Feed())
+  self.assertEqual(sorted(p['strategy'] for p in self.db.positions()),[1,2,3])
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND strategy=4',(e.NS,))[0]['status'],'pending')
  def test_reject_missing_timestamp(self):self.assertFalse(e.fill(self.db,self.signal(),{'price':100},T)['filled'])
  def test_closed_market(self):
   saturday=datetime(2026,11,7,10,tzinfo=e.IST);self.assertFalse(e.fill(self.db,self.signal(),self.quote(),saturday)['filled'])
