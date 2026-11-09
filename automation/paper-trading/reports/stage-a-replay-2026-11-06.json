@@ -1,0 +1,12 @@
+{
+ "target": "2026-11-06",
+ "history_start": "2024-01-01",
+ "symbols": 692,
+ "pairs_compared": 4844,
+ "match": 4844,
+ "diverge": [],
+ "prefilter_match": 692,
+ "prefilter_diverge": [],
+ "stored_qualified": 15,
+ "seconds": 70
+}

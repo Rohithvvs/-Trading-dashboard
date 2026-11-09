@@ -1,0 +1,115 @@
+{
+ "target": "2026-11-08",
+ "history_start": "2024-01-01",
+ "symbols": 692,
+ "pairs_compared": 4844,
+ "match": 4827,
+ "diverge": [
+  {
+   "symbol": "ADANIPORTS-EQ",
+   "strategy": 1,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "ADANIPORTS-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "ANGELONE-EQ",
+   "strategy": 1,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "ANGELONE-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "DLF-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "ENGINERSIN-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "GRWRHITECH-EQ",
+   "strategy": 1,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "GRWRHITECH-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "ICIL-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "JYOTICNC-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "MAHABANK-EQ",
+   "strategy": 4,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "MAHABANK-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "MOTILALOFS-EQ",
+   "strategy": 1,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "MOTILALOFS-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "PAYTM-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "PDSL-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  },
+  {
+   "symbol": "PRINCEPIPE-EQ",
+   "strategy": 7,
+   "stored": 1,
+   "replay": 0
+  }
+ ],
+ "prefilter_match": 692,
+ "prefilter_diverge": [],
+ "stored_qualified": 17,
+ "seconds": 74
+}
