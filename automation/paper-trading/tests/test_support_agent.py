@@ -157,6 +157,23 @@ class SupportAgentTests(unittest.TestCase):
             self.assertEqual(out['window']['phase'], 'post_eod')
             self.assertTrue(Path(out['report']['report_path']).exists())
 
+    def test_a6_observation_only_writes_findings_and_never_notifies(self):
+        day = '2026-11-09'
+        self.db.batch([
+            ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+             ('test_ns', 'ev-obs-1', 'run-obs', day, '2026-11-09T09:16:00+00:00', '2026-11-09T09:16:01+00:00', 'scan_completed', 'INFO', 'ok', '{"symbols":1}')),
+        ])
+        calls = []
+        out = sa.run_scheduled_pass(self.db, 'test_ns', day, observation_only=True, notify_fn=lambda r: calls.append(r))
+        self.assertTrue(out['observation_only'])
+        self.assertEqual(out['notifications_sent'], 0)
+        self.assertEqual(calls, [])
+        rows = self.db.query('SELECT observation_only,notified FROM support_findings WHERE namespace=?', ('test_ns',))
+        self.assertTrue(len(rows) >= 1)
+        for r in rows:
+            self.assertEqual(r['observation_only'], 1)
+            self.assertEqual(r['notified'], 0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

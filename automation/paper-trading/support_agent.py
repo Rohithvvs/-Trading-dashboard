@@ -497,19 +497,25 @@ def schedule_window(t, session_bounds):
     return {'due': False, 'phase': 'off_hours', 'schedule': SCHEDULE_SPEC}
 
 
-def run_scheduled_pass(db, namespace, session_day, session_bounds=None, now_at=None, observation_only=True, out_dir=None):
+def run_scheduled_pass(db, namespace, session_day, session_bounds=None, now_at=None, observation_only=True, out_dir=None, notify_fn=None):
     """Execute one non-blocking support pass (checkpoint -> detectors -> report) without engine.lock."""
     session_day = str(session_day)
+    obs = bool(observation_only)
     window = schedule_window(now_at, session_bounds) if now_at is not None else {'due': True, 'phase': 'manual', 'schedule': SCHEDULE_SPEC}
     cp_res = consume_checkpoint(db, namespace)
-    det_res = run_detectors(db, namespace, session_day=session_day, observation_only=observation_only)
+    det_res = run_detectors(db, namespace, session_day=session_day, observation_only=obs)
     rep = session_report(db, namespace, session_day=session_day, out_dir=out_dir)
+    notifications_sent = 0
+    if not obs and notify_fn is not None and det_res['findings_created'] > 0:
+        notify_fn(rep)
+        notifications_sent = det_res['findings_created']
     return {
         'status': 'ok',
         'namespace': namespace,
         'session_day': session_day,
         'window': window,
-        'observation_only': bool(observation_only),
+        'observation_only': obs,
+        'notifications_sent': notifications_sent,
         'checkpoint': cp_res,
         'detectors': det_res,
         'report': rep,
