@@ -242,7 +242,22 @@ def fill(db,s,q,t):
   al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))),quantity=r.get('quantity'),**extra)
   return r
 
+MUHURAT_INDICATOR_EXCLUDED={'2026-11-08'}
 def indicator(strategy,g):
+ if isinstance(g,pd.DataFrame) and 'trade_date' in g.columns:
+  m=g.trade_date.astype(str).isin(MUHURAT_INDICATOR_EXCLUDED)
+  if m.any():
+   clean=g.loc[~m].reset_index(drop=True)
+   if len(clean)==0:return g.assign(entry_condition=False,exit_condition=False)
+   base=indicator(strategy,clean);base.index=g.index[~m];out=g.copy()
+   for c in [c for c in base.columns if c not in g.columns]:
+    if base[c].dtype==bool:out[c]=False;out.loc[~m,c]=base[c]
+    else:
+     s=base[c].reindex(out.index);s.loc[m]=s.ffill().bfill().loc[m]
+     if not s.isna().any():s=s.astype(base[c].dtype)
+     out[c]=s
+   out.loc[m,'entry_condition']=False;out.loc[m,'exit_condition']=False
+   return out
  if strategy==1:
   f=g.copy();f['entry_condition']=f.close>f.high.shift().rolling(20).max();f['exit_condition']=f.close<f.low.shift().rolling(10).min();return f
  import strategy_indicators
@@ -454,9 +469,9 @@ def pnl(db):
    base=startqty*r[0]['close']
   if endqty and pos['mark_price'] is None:missing.append(sym);continue
   daily+=(endqty*pos['mark_price'] if pos else 0)-base+sum(x['cashflow'] for x in ff)
- report={'namespace':NS,'as_of_IST':t.isoformat(),'today_fills':len(today),'open_positions':len(ps),'cumulative_realized_pnl_INR':realized,'latest_known_unrealized_pnl_INR':None if unknown else unrealized,'latest_known_total_pnl_INR':None if unknown else realized+unrealized,'daily_mark_to_market_pnl_INR':None if missing else daily,'realized_on_closures_today_INR':sum(x['realized_pnl'] for x in today),'missing_marks':unknown,'stale_mark_symbols':sorted(set(stale)),'missing_daily_basis_symbols':missing,'daily_formula':'ending marked value - starting prior-close value + sell proceeds - buy payments; zero costs','valuation_is_live':is_open(t) and not(stale or unknown),'capital_return_pct':None,'costs_INR':0}
- report['costs_INR']=None;report['daily_formula']='ending marked value - prior-close basis + sell proceeds - buy payments; legacy GROSS before modeled costs'
- report['estimated_finance']=au.finance(sys.modules[__name__],db)
+ report={'namespace':NS,'as_of_IST':t.isoformat(),'today_fills':len(today),'open_positions':len(ps),'cumulative_realized_pnl_INR':realized,'latest_known_unrealized_pnl_INR':None if unknown else unrealized,'latest_known_total_pnl_INR':None if unknown else realized+unrealized,'daily_mark_to_market_pnl_INR':None if missing else daily,'realized_on_closures_today_INR':sum(x['realized_pnl'] for x in today),'missing_marks':unknown,'stale_mark_symbols':sorted(set(stale)),'missing_daily_basis_symbols':missing,'daily_formula':'ending marked value - prior-close basis + sell proceeds - buy payments; legacy GROSS before modeled costs','valuation_is_live':is_open(t) and not(stale or unknown),'capital_return_pct':None,'costs_INR':None}
+ fin=au.finance(sys.modules[__name__],db);capped=fin['capped_master_ledger']
+ report['estimated_finance']=fin;report['costs_INR']=capped['costs_INR'];report['capital_return_pct']=capped['capital_return_pct'];report['headline_pnl_source']='capped_master_ledger';report['headline_net_pnl_paise']=capped['headline_net_pnl_paise'];report['headline_net_pnl_INR']=capped['headline_net_pnl_INR'];report['capped_master_ledger']=capped;report['public_labels']=capped['public_labels']
  db.batch([('INSERT INTO paper_pnl(namespace,day,as_of,report_json) VALUES(?,?,?,?) ON CONFLICT(namespace,day) DO UPDATE SET as_of=excluded.as_of,report_json=excluded.report_json',(NS,day,t.isoformat(),js(report)))]);return report
 
 def init(db):
@@ -475,7 +490,7 @@ def migrate(db):
   db.batch([('ALTER TABLE paper_positions ADD COLUMN pending_exit INTEGER NOT NULL DEFAULT 0',()),('ALTER TABLE paper_positions ADD COLUMN pending_exit_since TEXT',())])
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
- parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
+ parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','funnel','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
  if not 1<=args.max_history_requests<=1100 or not 1<=args.max_history_seconds<=1080:parser.error('historical repair budget outside safe bounds')
  if args.command in ['worker','ensure-monitor','health','ensure-session','guardian','replay-audit','export-logs']:
   # Supervision must remain reachable even while a worker/scan holds engine.lock.
@@ -518,6 +533,7 @@ def main():
     elif args.command=='finance':out=au.finance(sys.modules[__name__],db)
     elif args.command=='charges':out=db.query('SELECT fill_id,day,strategy,symbol,side,policy_version,components_json,total_paise FROM paper_fill_costs WHERE namespace=? ORDER BY fill_id',(NS,))
     elif args.command=='overlap':out=au.overlap(sys.modules[__name__],db)
+    elif args.command=='funnel':out=au.funnel(sys.modules[__name__],db)
     elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
     elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
     log('command_completed',command=args.command,namespace=NS)

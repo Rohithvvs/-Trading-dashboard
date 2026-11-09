@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 POLICY=json.loads((Path(__file__).parent/'prefilter_policy.json').read_text())
+MUHURAT_INDICATOR_EXCLUDED={'2026-11-08'}
 SCHEMA=["CREATE TABLE IF NOT EXISTS paper_prefilter_policies(version TEXT PRIMARY KEY,policy_json TEXT NOT NULL)","CREATE TABLE IF NOT EXISTS paper_prefilter_states(namespace TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,status TEXT NOT NULL,metrics_json TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(namespace,bar_date,symbol,policy_version))","CREATE TABLE IF NOT EXISTS paper_entry_gate_proofs(namespace TEXT NOT NULL,signal_id TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,PRIMARY KEY(namespace,signal_id))"]
 def init(e,db):
  db.batch([(s,()) for s in SCHEMA]+[('INSERT OR IGNORE INTO paper_prefilter_policies VALUES(?,?)',(POLICY['version'],e.js(POLICY)))])
@@ -11,6 +12,9 @@ def init(e,db):
 def evaluate(stock,index,target):
  r={'policy_version':POLICY['version'],'benchmark':POLICY['benchmark'],'bar_date':str(target),'status':'UNAVAILABLE','reasons':[],'checks':{},'volume_expansion':None,'volume_ratio':None,'beta':None,'beta_pairs':0,'raw_prices_unadjusted':True}
  def unavailable(reason):r['reasons'].append(reason);return r
+ if stock.empty or index.empty:return unavailable('missing_stock_or_benchmark')
+ if 'trade_date' in stock.columns and str(target) not in MUHURAT_INDICATOR_EXCLUDED:stock=stock[~stock.trade_date.astype(str).isin(MUHURAT_INDICATOR_EXCLUDED)]
+ if 'trade_date' in index.columns and str(target) not in MUHURAT_INDICATOR_EXCLUDED:index=index[~index.trade_date.astype(str).isin(MUHURAT_INDICATOR_EXCLUDED)]
  if stock.empty or index.empty:return unavailable('missing_stock_or_benchmark')
  # Benchmark sessions define every return interval. Never forward-fill or pair unlike intervals.
  b=index[index.trade_date<=str(target)].sort_values('trade_date').drop_duplicates('trade_date',keep=False).tail(POLICY['beta_intervals']+1).copy()
@@ -53,7 +57,7 @@ def benchmark(e,db,target,api=None,sync=False):
   first=rows[-253:][0]['trade_date'];expected={r['trade_date'] for r in db.query('SELECT trade_date FROM index_ohlcv WHERE symbol=? AND trade_date>=? AND trade_date<=?',('NIFTY500',first,str(target)))}
   day=e.date.fromisoformat(first)
   while day<=target:
-   if e.session(day):expected.add(str(day))
+   if e.session(day) and str(day) not in MUHURAT_INDICATOR_EXCLUDED:expected.add(str(day))
    day+=e.timedelta(days=1)
   if expected-{r['trade_date'] for r in rows}:raise RuntimeError('benchmark_missing_verified_exchange_session')
  return pd.DataFrame(rows)

@@ -81,14 +81,96 @@ def finance(e,db):
   if dp:debited.add(isin)
  marked=sum(cents(p['mark_price'])*p['qty'] for p in ps if p['mark_price'] is not None);cashgross=sum(c['gross_cashflow_paise'] for c in cost)+marked;cashnet=sum(c['net_cashflow_paise'] for c in cost)+marked
  policy=json.loads((e.ROOT/'charge_policy.json').read_text())
- return {'namespace':e.NS,'as_of_IST':t.isoformat(),'day':day,'money_unit':'integer INR paise','estimated_not_actual_charges':True,'policy_version':policy['version'],'policy_current':policy['effective_from']<=day<=policy['valid_through'],'gross_realized_paise':gross_realized,'gross_unrealized_paise':None if missing else gross-gross_realized,'gross_total_paise':None if missing else gross,'accrued_cost_paise':accrued,'net_realized_paise':None if uncovered else gross_realized-closed_cost,'net_unrealized_accrued_paise':None if missing or uncovered else gross-gross_realized-open_entry,'net_total_accrued_paise':None if missing or uncovered else gross-accrued,'estimated_exit_cost_paise':None if projection_missing else projected,'net_after_estimated_exit_paise':None if missing or projection_missing or uncovered else gross-accrued-projected,'open_entry_cost_paise':open_entry,'charge_breakdown_paise':breakdown,'by_strategy':groups('strategy'),'by_entry_cohort':groups('cohort'),'fills_missing_cost_ledger':uncovered,'cost_coverage_complete':not uncovered,'ledger_reconciled':not(missing or uncovered) and cashgross==gross and cashnet==gross-accrued,'cashflow_net_paise':None if missing or uncovered else cashnet,'missing_marks':missing,'stale_mark_symbols':sorted(set(stale)),'valuation_is_live':active(e,t) and not(missing or stale),'funded_capital':None,'capital_return_pct':None,'mark_observations':[{'strategy':p['strategy'],'symbol':p['symbol'],'mark_at':p['mark_at'],'source':'last accepted fresh FYERS_QUOTES; not official closing price'} for p in ps]}
+ out={'namespace':e.NS,'as_of_IST':t.isoformat(),'day':day,'money_unit':'integer INR paise','estimated_not_actual_charges':True,'policy_version':policy['version'],'policy_current':policy['effective_from']<=day<=policy['valid_through'],'gross_realized_paise':gross_realized,'gross_unrealized_paise':None if missing else gross-gross_realized,'gross_total_paise':None if missing else gross,'accrued_cost_paise':accrued,'net_realized_paise':None if uncovered else gross_realized-closed_cost,'net_unrealized_accrued_paise':None if missing or uncovered else gross-gross_realized-open_entry,'net_total_accrued_paise':None if missing or uncovered else gross-accrued,'estimated_exit_cost_paise':None if projection_missing else projected,'net_after_estimated_exit_paise':None if missing or projection_missing or uncovered else gross-accrued-projected,'open_entry_cost_paise':open_entry,'charge_breakdown_paise':breakdown,'by_strategy':groups('strategy'),'by_entry_cohort':groups('cohort'),'fills_missing_cost_ledger':uncovered,'cost_coverage_complete':not uncovered,'ledger_reconciled':not(missing or uncovered) and cashgross==gross and cashnet==gross-accrued,'cashflow_net_paise':None if missing or uncovered else cashnet,'missing_marks':missing,'stale_mark_symbols':sorted(set(stale)),'valuation_is_live':active(e,t) and not(missing or stale),'funded_capital':None,'capital_return_pct':None,'mark_observations':[{'strategy':p['strategy'],'symbol':p['symbol'],'mark_at':p['mark_at'],'source':'last accepted fresh FYERS_QUOTES; not official closing price'} for p in ps]}
+ out['capped_master_ledger']=capped_ledger(e,db,out,ps,cost)
+ out['public_labels']=out['capped_master_ledger']['public_labels']
+ return out
 
-def overlap(e,db):
- r=db.query('SELECT MAX(bar_date) AS bar FROM paper_scan_batches WHERE namespace=?',(e.NS,));bar=r[0]['bar'] if r else None;groups={}
+PUBLIC_LABELS={
+ 'historical_figures_gross':True,
+ 'survivorship_biased':True,
+ 'not_jointly_tested':True,
+ 'historical_disclaimer':'Historical backtest figures are gross of transaction costs, survivorship-biased on the present-day universe, and not jointly tested across strategies.',
+ 'headline_pnl_source':'capped_master_ledger',
+ 'shadow_book_diagnostic_only':True,
+ 'adv_floor_review':'pending_funnel_report',
+}
+
+def capped_ledger(e,db,fin=None,ps=None,cost=None):
+ if ps is None:ps=db.positions()
+ if cost is None:cost=db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,))
+ accrued=fin['accrued_cost_paise'] if fin and fin.get('accrued_cost_paise') is not None else sum(int(r['total_paise']) for r in cost)
+ master_cap=e.cap.POLICY['master_capital_inr']*100;sleeve_cap=e.cap.POLICY['sleeve_capital_inr']*100
+ costs={};credits={}
+ for r in cost:
+  s=int(r['strategy']);costs[s]=costs.get(s,0)+int(r['net_cashflow_paise'])
+ for r in db.query('SELECT strategy,COALESCE(SUM(amount_paise),0) AS n FROM paper_cash_credits WHERE namespace=? GROUP BY strategy',(e.NS,)):
+  credits[int(r['strategy'])]=int(r['n'])
+ shadow_costs={int(r['strategy']):int(r['n']) for r in db.query('SELECT strategy,COALESCE(SUM(net_cashflow_paise),0) AS n FROM paper_shadow_costs WHERE namespace=? GROUP BY strategy',(e.NS,))}
+ shadows=db.query('SELECT strategy,symbol,qty,entry_price FROM paper_shadow_positions WHERE namespace=? AND qty>0',(e.NS,))
+ sleeves={};missing=False;total_cash=0;total_marked=0
+ for s in range(1,8):
+  held=[p for p in ps if int(p['strategy'])==s];cash=sleeve_cap+costs.get(s,0)+credits.get(s,0);total_cash+=cash
+  if any(p['mark_price'] is None for p in held):
+   missing=True;sleeves[str(s)]={'sleeve_capital_paise':sleeve_cap,'cash_paise':cash,'market_value_paise':None,'equity_paise':None,'net_pnl_paise':None,'open_positions':len(held)}
+  else:
+   mv=sum(cents(p['mark_price'])*int(p['qty']) for p in held);total_marked+=mv;eq=cash+mv
+   sleeves[str(s)]={'sleeve_capital_paise':sleeve_cap,'cash_paise':cash,'market_value_paise':mv,'equity_paise':eq,'net_pnl_paise':eq-sleeve_cap,'open_positions':len(held)}
+ shadow_eq=sum(sleeve_cap+shadow_costs.get(s,0)+sum(cents(p['entry_price'])*int(p['qty']) for p in shadows if int(p['strategy'])==s) for s in range(1,8))
+ master_eq=None if missing else total_cash+total_marked;net_paise=None if master_eq is None else master_eq-master_cap
+ net_inr=None if net_paise is None else round(net_paise/100,2);ret_pct=None if net_paise is None else round((net_paise/master_cap)*100,4)
+ labels={**PUBLIC_LABELS,'adv_floor_review':e.cap.POLICY['adv_floor_review'],'strategy_07_version':e.RULES['7'].get('version'),'strategy_07_evidence_clock':e.RULES['7'].get('evidence_clock')}
+ return {'headline':True,'book':'capped','master_capital_paise':master_cap,'master_capital_INR':e.cap.POLICY['master_capital_inr'],'sleeve_capital_paise':sleeve_cap,'cash_paise':total_cash,'market_value_paise':None if missing else total_marked,'equity_paise':master_eq,'headline_net_pnl_paise':net_paise,'headline_net_pnl_INR':net_inr,'accrued_cost_paise':accrued,'costs_INR':round(accrued/100,2),'capital_return_pct':ret_pct,'sleeves':sleeves,'shadow_diagnostic':{'headline':False,'book':'shadow','equity_paise':shadow_eq,'net_pnl_paise':shadow_eq-master_cap,'open_positions':len(shadows)},'public_labels':labels}
+
+def overlap(e,db,bar_date=None):
+ if bar_date is None:
+  r=db.query('SELECT MAX(bar_date) AS bar FROM paper_scan_batches WHERE namespace=?',(e.NS,));bar=r[0]['bar'] if r else None
+ else:bar=str(bar_date)
+ groups={}
  for x in db.query('SELECT symbol,strategy FROM paper_qualifier_states WHERE namespace=? AND bar_date=? AND qualified=1 ORDER BY symbol,strategy',(e.NS,bar)):
-  groups.setdefault(x['symbol'],[]).append(x['strategy'])
+  groups.setdefault(x['symbol'],[]).append(int(x['strategy']))
  stocks=[{'symbol':s,'strategies':v,'count':len(v),'cohort':'single' if len(v)==1 else 'exactly_2' if len(v)==2 else 'exactly_3' if len(v)==3 else '4_plus'} for s,v in groups.items()]
- return {'as_of_bar':bar,'stocks':stocks,'bucket_counts':{k:sum(x['cohort']==k for x in stocks) for k in ['single','exactly_2','exactly_3','4_plus']},'at_least_2':sum(x['count']>=2 for x in stocks),'at_least_3':sum(x['count']>=3 for x in stocks),'execution':'Independent virtual strategy holdings; not a combined funded portfolio. Entry attribution is immutable, never this latest cohort.'}
+ by_strategy={i:{s for s,v in groups.items() if i in v} for i in range(1,8)}
+ matrix={str(i):{str(j):len(by_strategy[i]&by_strategy[j]) for j in range(1,8)} for i in range(1,8)}
+ return {'as_of_bar':bar,'stocks':stocks,'bucket_counts':{k:sum(x['cohort']==k for x in stocks) for k in ['single','exactly_2','exactly_3','4_plus']},'at_least_2':sum(x['count']>=2 for x in stocks),'at_least_3':sum(x['count']>=3 for x in stocks),'matrix':matrix,'isin_cap_impact_symbols':[x['symbol'] for x in stocks if x['count']>e.cap.POLICY['max_strategies_per_isin']],'execution':'Independent virtual strategy holdings; not a combined funded portfolio. Entry attribution is immutable, never this latest cohort.'}
+
+def funnel(e,db,bar_date=None):
+ ov=overlap(e,db,bar_date);bar=ov['as_of_bar']
+ pre=db.query('SELECT status,COUNT(*) AS n FROM paper_prefilter_states WHERE namespace=? AND bar_date=? GROUP BY status',(e.NS,bar)) if bar else []
+ pre_counts={k:0 for k in ('PASS','FAIL','UNAVAILABLE')}
+ for r in pre:
+  if r['status'] in pre_counts:pre_counts[r['status']]=int(r['n'])
+ q_rows=db.query('SELECT symbol,strategy FROM paper_qualifier_states WHERE namespace=? AND bar_date=? AND qualified=1 ORDER BY symbol,strategy',(e.NS,bar)) if bar else []
+ syms=sorted({r['symbol'] for r in q_rows});lookback=e.cap.POLICY['adv_lookback_sessions'];floor_paise=e.cap.POLICY['adv_floor_inr']*100;adv_ok={}
+ if syms:
+  try:
+   ohlcv=db.query('SELECT symbol,trade_date,turnover FROM daily_ohlcv WHERE symbol IN ('+','.join('?' for _ in syms)+') AND trade_date<=? AND turnover IS NOT NULL ORDER BY symbol,trade_date DESC',[ *syms,str(bar)])
+  except Exception:ohlcv=[]
+  by_sym={}
+  for r in ohlcv:
+   bucket=by_sym.setdefault(r['symbol'],[])
+   if len(bucket)<lookback:bucket.append(round(float(r['turnover'])*100))
+  for sym in syms:
+   vals=sorted(by_sym.get(sym,[]))
+   adv_ok[sym]=len(vals)>=lookback and (vals[lookback//2-1]+vals[lookback//2])/2>=floor_paise
+ open_by_strat={i:0 for i in range(1,8)};open_by_sym={}
+ for p in db.positions():
+  s=int(p['strategy']);open_by_strat[s]=open_by_strat.get(s,0)+1;open_by_sym.setdefault(p['symbol'],set()).add(s)
+ per_strat={str(i):{'strategy_qualified':0,'adv_floor_pass':0,'adv_floor_skipped':0,'isin_cap_pass':0,'isin_cap_skipped':0,'sleeve_slot_pass':0,'sleeve_slot_skipped':0} for i in range(1,8)}
+ sym_admitted={sym:len(open_by_sym.get(sym,set())) for sym in syms};slot_used=dict(open_by_strat)
+ for r in q_rows:
+  sym=r['symbol'];s=int(r['strategy']);st=per_strat[str(s)];st['strategy_qualified']+=1
+  if not adv_ok.get(sym,False):st['adv_floor_skipped']+=1;continue
+  st['adv_floor_pass']+=1
+  if sym_admitted.get(sym,0)>=e.cap.POLICY['max_strategies_per_isin']:st['isin_cap_skipped']+=1;continue
+  sym_admitted[sym]=sym_admitted.get(sym,0)+1;st['isin_cap_pass']+=1
+  if slot_used.get(s,0)>=e.cap.POLICY['max_positions_per_sleeve']:st['sleeve_slot_skipped']+=1;continue
+  slot_used[s]=slot_used.get(s,0)+1;st['sleeve_slot_pass']+=1
+ totals={k:sum(per_strat[str(i)][k] for i in range(1,8)) for k in ('strategy_qualified','adv_floor_pass','adv_floor_skipped','isin_cap_pass','isin_cap_skipped','sleeve_slot_pass','sleeve_slot_skipped')}
+ decisions={}
+ for r in db.query('SELECT cause,COUNT(*) AS n FROM paper_decisions WHERE namespace=? GROUP BY cause',(e.NS,)):
+  decisions[str(r['cause'])]=int(r['n'])
+ return {'as_of_bar':bar,'adv_floor_inr':e.cap.POLICY['adv_floor_inr'],'adv_lookback_sessions':lookback,'adv_floor_review':e.cap.POLICY['adv_floor_review'],'stages':{'universe_evaluated':sum(pre_counts.values()),'prefilter_pass':pre_counts['PASS'],**totals},'prefilter_counts':pre_counts,'by_strategy':per_strat,'recorded_decision_causes':decisions,'overlap':ov,'public_labels':PUBLIC_LABELS}
 
 def _eod(e,db):
  t=e.now();ss=e.session(t.date())

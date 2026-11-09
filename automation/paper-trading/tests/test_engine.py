@@ -428,4 +428,47 @@ class PaperTests(unittest.TestCase):
   pz.evaluate(e,self.db,'2026-11-12',force=True)
   self.assertEqual(self.db.query("SELECT paused,baseline_day FROM paper_pause_state WHERE namespace=? AND scope='strategy' AND strategy=4",(e.NS,))[0]['paused'],0)
   self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_group_i_funnel_overlap_muhurat_and_capped_headline_pnl(self):
+  import pandas as pd
+  self.assertTrue(e.is_open(datetime(2026,11,8,14,30,tzinfo=e.IST)))
+  dates=pd.bdate_range(end='2026-11-06',periods=255).strftime('%Y-%m-%d').tolist()+['2026-11-09']
+  base=pd.DataFrame({'symbol':'RELIANCE-EQ','trade_date':dates,'open':100.,'high':102.,'low':99.,'close':101.,'volume':1000.})
+  muhurat_row=pd.DataFrame([{'symbol':'RELIANCE-EQ','trade_date':'2026-11-08','open':9999.,'high':9999.,'low':1.,'close':9999.,'volume':999999.}])
+  with_muhurat=pd.concat([base.iloc[:-1],muhurat_row,base.iloc[-1:]],ignore_index=True)
+  for strategy in range(1,8):
+   f_clean=e.indicator(strategy,base).reset_index(drop=True)
+   f_muh=e.indicator(strategy,with_muhurat)
+   m_row=f_muh[f_muh.trade_date=='2026-11-08'].iloc[0]
+   self.assertFalse(bool(m_row.entry_condition));self.assertFalse(bool(m_row.exit_condition))
+   f_after=f_muh[f_muh.trade_date!='2026-11-08'].reset_index(drop=True)
+   pd.testing.assert_frame_equal(f_clean,f_after)
+  pf_clean=e.pf.evaluate(base,base,'2026-11-09');pf_muh=e.pf.evaluate(with_muhurat,with_muhurat,'2026-11-09')
+  self.assertEqual(pf_clean,pf_muh)
+  bar='2026-11-08';at=T.isoformat()
+  self.seed_adv('RELIANCE-EQ',200000000);self.seed_adv('TCS-EQ',50000000)
+  stm=[('INSERT OR REPLACE INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?)',(e.NS,bar,at,'ok','{}')),
+       ('INSERT OR REPLACE INTO paper_prefilter_states(namespace,bar_date,symbol,policy_version,status,metrics_json,observed_at) VALUES(?,?,?,?,?,?,?)',(e.NS,bar,'RELIANCE-EQ',e.pf.POLICY['version'],'PASS','{}',at)),
+       ('INSERT OR REPLACE INTO paper_prefilter_states(namespace,bar_date,symbol,policy_version,status,metrics_json,observed_at) VALUES(?,?,?,?,?,?,?)',(e.NS,bar,'TCS-EQ',e.pf.POLICY['version'],'PASS','{}',at))]
+  chk=e.js({'input_policy':{'version':e.si.POLICY['version']}})
+  for s in (1,2,3,4):stm.append(('INSERT OR REPLACE INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?)',(e.NS,bar,s,'RELIANCE-EQ',1,chk,'{}',at)))
+  for s in (1,2):stm.append(('INSERT OR REPLACE INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?)',(e.NS,bar,s,'TCS-EQ',1,chk,'{}',at)))
+  self.db.batch(stm)
+  ov=e.au.overlap(e,self.db,bar)
+  self.assertEqual(ov['bucket_counts'],{'single':0,'exactly_2':1,'exactly_3':0,'4_plus':1})
+  self.assertEqual(ov['matrix']['1']['2'],2);self.assertEqual(ov['matrix']['1']['4'],1);self.assertEqual(ov['isin_cap_impact_symbols'],['RELIANCE-EQ'])
+  fn=e.au.funnel(e,self.db,bar)
+  self.assertEqual(fn['adv_floor_review'],'pending_funnel_report');self.assertEqual(e.cap.POLICY['adv_floor_review'],'pending_funnel_report')
+  self.assertEqual(fn['stages']['strategy_qualified'],6);self.assertEqual(fn['stages']['adv_floor_pass'],4);self.assertEqual(fn['stages']['adv_floor_skipped'],2)
+  self.assertEqual(fn['stages']['isin_cap_pass'],3);self.assertEqual(fn['stages']['isin_cap_skipped'],1);self.assertEqual(fn['stages']['sleeve_slot_pass'],3)
+  self.assertTrue(e.fill(self.db,self.signal(symbol='RELIANCE-EQ',strategy=1),self.quote(100),T)['filled'])
+  self.db.batch([('INSERT INTO paper_shadow_positions(namespace,strategy,symbol,qty,entry_price,entry_at,updated_at) VALUES(?,?,?,?,?,?,?)',(e.NS,5,'INFY-EQ',500,100,at,at)),
+                 ('INSERT INTO paper_shadow_costs(namespace,signal_id,strategy,symbol,side,qty,price,total_paise,net_cashflow_paise,filled_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(e.NS,'sh1',5,'INFY-EQ','BUY',500,100,1000,-5001000,at))])
+  p=e.pnl(self.db)
+  self.assertEqual(p['headline_pnl_source'],'capped_master_ledger')
+  self.assertIsNotNone(p['costs_INR']);self.assertGreater(p['costs_INR'],0)
+  self.assertIsNotNone(p['capital_return_pct'])
+  self.assertEqual(p['capped_master_ledger']['master_capital_INR'],3500000)
+  self.assertEqual(p['headline_net_pnl_paise'],p['estimated_finance']['net_total_accrued_paise'])
+  self.assertFalse(p['capped_master_ledger']['shadow_diagnostic']['headline'])
+  self.assertTrue(p['public_labels']['historical_figures_gross']);self.assertTrue(p['public_labels']['survivorship_biased']);self.assertTrue(p['public_labels']['not_jointly_tested'])
 if __name__=='__main__':unittest.main(verbosity=2)

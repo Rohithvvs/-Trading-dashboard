@@ -57,9 +57,9 @@ The engine is not installed on the bot box.
 
 ## Task Group I — reporting and sessions
 
-- [ ] Funnel report and overlap matrix
-- [ ] Muhurat excluded from indicators
-- [ ] Public labels and capped headline P&L
+- [x] Funnel report and overlap matrix (`automation.funnel`, `automation.overlap` 7×7 matrix; `adv_floor_review` stays `pending_funnel_report`)
+- [x] Muhurat (`2026-11-08`) excluded from all strategy and prefilter indicators while remaining a tradable special session
+- [x] Public labels and capped headline P&L (`capped_master_ledger` as headline, shadow book diagnostic only, gross/survivorship/non-joint historical disclaimers)
 
 ## Acceptance
 
