@@ -25,7 +25,7 @@ The engine is not installed on the bot box.
 - [x] ISIN cap 3, `ISIN_CAP`
 - [x] Sleeve cash, `INSUFFICIENT_CASH`
 - [x] Shadow ledger does not consume the ISIN cap. ISIN-blocked buys are recorded there. Shadow-only exits are still open.
-- [ ] Pro-rata DP
+- [x] Pro-rata DP. One ₹14.75 charge per ISIN per sell day, turnover-weighted. Remainder paise go to the latest sell.
 
 ## Task Group C — ADV, participation, slippage
 

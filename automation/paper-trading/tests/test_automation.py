@@ -38,7 +38,19 @@ class AutomationTests(unittest.TestCase):
   for strategy in [1,2]:e.fill(self.db,self.signal(strategy=strategy),self.quote(2500),T)
   later=T.replace(day=11);e.now=lambda:later
   for strategy in [1,2]:e.fill(self.db,self.signal('SELL',strategy=strategy,eligible='2026-11-11'),{'price':2600,'quote_at':later.isoformat()},later)
-  cost=self.db.query("SELECT components_json FROM paper_fill_costs WHERE namespace=? AND side='SELL' ORDER BY fill_id",(e.NS,));self.assertEqual([json.loads(x['components_json'])['dp'] for x in cost],[1250,0]);self.assertEqual(len(self.db.query('SELECT * FROM paper_dp_debits WHERE namespace=?',(e.NS,))),1)
+  cost=[json.loads(x['components_json']) for x in self.db.query("SELECT components_json FROM paper_fill_costs WHERE namespace=? AND side='SELL' ORDER BY fill_id",(e.NS,))]
+  self.assertEqual([x['dp'] for x in cost],[625,625]);self.assertEqual([x['dp_gst'] for x in cost],[112,113]);self.assertEqual(sum(x['dp']+x['dp_gst'] for x in cost),1475)
+  debits=self.db.query('SELECT amount_paise FROM paper_dp_debits WHERE namespace=?',(e.NS,));self.assertEqual([x['amount_paise'] for x in debits],[1475])
+  second=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT' ORDER BY seq DESC LIMIT 1",(e.NS,))[0]['payload_json'])
+  self.assertEqual(second['dp_rule'],'pro_rata_turnover_once_per_isin_day');self.assertEqual(second['dp_adjustments'][0]['dp_before'],1250);self.assertEqual(second['dp_adjustments'][0]['dp_after'],625)
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_overnight_dp_splits_unequal_turnover(self):
+  e.fill(self.db,self.signal(strategy=1),self.quote(2500),T);e.fill(self.db,self.signal(strategy=2),self.quote(100),T)
+  later=T.replace(day=11);e.now=lambda:later
+  e.fill(self.db,self.signal('SELL',strategy=1,eligible='2026-11-11'),{'price':2600,'quote_at':later.isoformat()},later)
+  e.fill(self.db,self.signal('SELL',strategy=2,eligible='2026-11-11'),{'price':200,'quote_at':later.isoformat()},later)
+  cost=[json.loads(x['components_json']) for x in self.db.query("SELECT components_json FROM paper_fill_costs WHERE namespace=? AND side='SELL' ORDER BY fill_id",(e.NS,))]
+  self.assertEqual([(x['dp'],x['dp_gst']) for x in cost],[(427,76),(823,149)]);self.assertEqual(sum(x['dp'] for x in cost),1250);self.assertEqual(sum(x['dp_gst'] for x in cost),225)
  def test_same_day_no_dematerialization_fee(self):
   e.fill(self.db,self.signal(),self.quote(),T);e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertFalse(self.db.query('SELECT * FROM paper_dp_debits WHERE namespace=?',(e.NS,)))
  def test_open_cost_net_realized_and_estimate_separation(self):
