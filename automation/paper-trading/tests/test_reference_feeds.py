@@ -66,6 +66,12 @@ class ReferenceFeedTests(unittest.TestCase):
         self.assertEqual(e.market_guard({'price': 100, 'open': 99, 'high': 101, 'low': 98}, e.band_for(self.db, 'INFY-EQ', '2026-11-09'))['surveillance'], 'ASM')
         self.assertEqual(e.market_guard({'price': 100, 'open': 99, 'high': 101, 'low': 98}, e.band_for(self.db, 'TCS-EQ', '2026-11-09'))['series'], 'BE')
 
+    def test_reference_day_targets_next_session_after_close(self):
+        from datetime import date
+        self.assertEqual(e.reference_day(datetime(2026, 11, 9, 8, 45, tzinfo=e.IST)), date(2026, 11, 9))
+        self.assertEqual(e.reference_day(datetime(2026, 11, 9, 17, 0, tzinfo=e.IST)), date(2026, 11, 11))
+        self.assertEqual(e.reference_day(datetime(2026, 11, 10, 9, 0, tzinfo=e.IST)), date(2026, 11, 11))
+
     def test_total_feed_outage_is_reported_not_raised(self):
         def down(url, as_json=True):
             raise RuntimeError('http_403')

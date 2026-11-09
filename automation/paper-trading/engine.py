@@ -71,6 +71,10 @@ def completed_day(t):
   if s is None:raise RuntimeError('calendar_unverified_completed_session')
   if s and (d<t.date() or t.timetz().replace(tzinfo=None)>=COMPLETED_CUTOFF):return d
  raise RuntimeError('no_completed_session')
+def reference_day(t):
+ """Session the guards apply to: today until today's close, otherwise the next verified session."""
+ s=session(t.date())
+ return t.date() if s and t.timetz().replace(tzinfo=None)<s[1] else next_session(t.date())
 def load_env():
  sys.path.insert(0,str(LEGACY));from fyers_auth import load_env as f
  return f(LEGACY/'.env')
@@ -345,7 +349,7 @@ def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  reference_report=None
  if do_sync and not snapshot_only:
   # Plan A6/A7 inputs (corporate actions, ASM/GSM, BE/BZ). Fail-soft: a feed outage is reported, never invented.
-  try:reference_report=rf.refresh(sys.modules[__name__],db,t.date() if session(t.date()) else next_session(t.date()))
+  try:reference_report=rf.refresh(sys.modules[__name__],db,reference_day(t))
   except Exception as ex:reference_report={'status':'failed','error':au.safe_error(ex)}
  raw=read_history(db,syms,target);assert len(raw)>0
  raw,input_details,input_audit=si.filter_history(raw,benchmark)
@@ -582,7 +586,7 @@ def main():
     elif args.command=='funnel':out=au.funnel(sys.modules[__name__],db)
     elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
     elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
-    elif args.command=='reference-feeds':d=now().date();out=rf.refresh(sys.modules[__name__],db,d if session(d) else next_session(d))
+    elif args.command=='reference-feeds':out=rf.refresh(sys.modules[__name__],db,reference_day(now()))
     log('command_completed',command=args.command,namespace=NS)
     print(js(out))
   except Exception as e:
