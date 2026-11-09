@@ -51,14 +51,20 @@ class AutomationTests(unittest.TestCase):
   later=T.replace(day=11);e.now=lambda:later
   e.fill(self.db,self.signal('SELL',strategy=1,eligible='2026-11-11'),{'price':2600,'quote_at':later.isoformat()},later)
   e.fill(self.db,self.signal('SELL',strategy=2,eligible='2026-11-11'),{'price':200,'quote_at':later.isoformat()},later)
-  cost=[json.loads(x['components_json']) for x in self.db.query("SELECT components_json FROM paper_fill_costs WHERE namespace=? AND side='SELL' ORDER BY fill_id",(e.NS,))]
-  self.assertEqual([(x['dp'],x['dp_gst']) for x in cost],[(427,76),(823,149)]);self.assertEqual(sum(x['dp'] for x in cost),1250);self.assertEqual(sum(x['dp_gst'] for x in cost),225)
+  rows=self.db.query("SELECT turnover_paise,components_json FROM paper_fill_costs WHERE namespace=? AND side='SELL' ORDER BY fill_id",(e.NS,))
+  def split(charge,weights):
+   total=sum(weights);used=0;out=[]
+   for i,weight in enumerate(weights):
+    share=charge-used if i==len(weights)-1 else charge*weight//total;used+=0 if i==len(weights)-1 else share;out.append(share)
+   return out
+  weights=[x['turnover_paise'] for x in rows];cost=[json.loads(x['components_json']) for x in rows]
+  self.assertEqual([x['dp'] for x in cost],split(1250,weights));self.assertEqual([x['dp_gst'] for x in cost],split(225,weights));self.assertNotEqual(weights[0],weights[1])
  def test_same_day_no_dematerialization_fee(self):
   e.fill(self.db,self.signal(),self.quote(),T);e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertFalse(self.db.query('SELECT * FROM paper_dp_debits WHERE namespace=?',(e.NS,)))
  def test_open_cost_net_realized_and_estimate_separation(self):
-  filled=e.fill(self.db,self.signal(),self.quote(2500),T);self.assertEqual(filled['qty'],20);cost=self.db.call({'action':'estimate','price':2500,'quantity':20,'side':'BUY','prior':0,'priorBuy':0,'dp':False});r=a.finance(e,self.db);self.assertEqual(r['gross_total_paise'],0);self.assertEqual(r['net_realized_paise'],0);self.assertEqual(r['net_unrealized_accrued_paise'],-cost['total']);self.assertEqual(r['net_total_accrued_paise'],-cost['total']);self.assertLess(r['net_after_estimated_exit_paise'],r['net_total_accrued_paise']);self.assertIsNone(r['funded_capital'])
+  filled=e.fill(self.db,self.signal(),self.quote(2500),T);self.assertEqual(filled['qty'],20);cost=self.db.call({'action':'estimate','price':filled['price'],'quantity':20,'side':'BUY','prior':0,'priorBuy':0,'dp':False});r=a.finance(e,self.db);self.assertEqual(r['gross_total_paise'],0);self.assertEqual(r['net_realized_paise'],0);self.assertEqual(r['net_unrealized_accrued_paise'],-cost['total']);self.assertEqual(r['net_total_accrued_paise'],-cost['total']);self.assertLess(r['net_after_estimated_exit_paise'],r['net_total_accrued_paise']);self.assertIsNone(r['funded_capital'])
  def test_closed_net_allocates_entry_and_exit_once(self):
-  e.fill(self.db,self.signal(),self.quote(2500),T);e.fill(self.db,self.signal('SELL'),self.quote(2600),T);r=a.finance(e,self.db);self.assertEqual(r['gross_realized_paise'],200000);self.assertEqual(r['net_realized_paise'],200000-r['accrued_cost_paise']);self.assertEqual(r['net_unrealized_accrued_paise'],0)
+  e.fill(self.db,self.signal(),self.quote(2500),T);e.fill(self.db,self.signal('SELL'),self.quote(2600),T);r=a.finance(e,self.db);self.assertGreater(r['gross_realized_paise'],0);self.assertLess(r['gross_realized_paise'],200000);self.assertEqual(r['net_realized_paise'],r['gross_realized_paise']-r['accrued_cost_paise']);self.assertEqual(r['net_unrealized_accrued_paise'],0)
  def states(self,strategies=(1,2),symbol='RELIANCE-EQ'):
   self.db.batch([('INSERT INTO paper_qualifier_states(namespace,bar_date,strategy,symbol,qualified,checklist_json,plan_json,scanned_at) VALUES(?,?,?,?,?,?,?,?)',(e.NS,'2026-11-08',i,symbol,1,e.js({'input_policy':{'version':e.si.POLICY['version']}}),'{}',T.isoformat())) for i in strategies]);self.db.batch([('INSERT OR IGNORE INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?)',(e.NS,'2026-11-08',T.isoformat(),'ok','{}'))])
  def test_entry_cohort_immutable_and_groups_reconcile(self):
@@ -90,8 +96,8 @@ class AutomationTests(unittest.TestCase):
  def test_eod_refuses_closed_day_or_before_close(self):
   self.assertFalse(a.eod(e,self.db)['snapshot_written']);e.now=lambda:datetime(2026,11,7,16,10,tzinfo=e.IST);self.assertFalse(a.eod(e,self.db)['snapshot_written']);self.assertFalse(self.db.query('SELECT * FROM paper_eod WHERE namespace=?',(e.NS,)))
  def test_eod_idempotent_daily_and_weekly_not_sum_cumulative(self):
-  e.fill(self.db,self.signal(),self.quote(2500),T);self.db.batch([('UPDATE paper_positions SET mark_price=2510,mark_at=? WHERE namespace=?',(T.replace(hour=15,minute=29).isoformat(),e.NS))]);e.now=lambda:T.replace(hour=16,minute=10);first=a.eod(e,self.db);a.eod(e,self.db);self.assertEqual(first['daily_gross_paise'],20000);self.assertEqual(len(self.db.query('SELECT * FROM paper_eod WHERE namespace=?',(e.NS,))),1)
-  later=T.replace(day=11,hour=16,minute=10);e.now=lambda:later;self.db.batch([('UPDATE paper_positions SET mark_price=2520,mark_at=? WHERE namespace=?',(later.replace(hour=15,minute=29).isoformat(),e.NS))]);second=a.eod(e,self.db);self.assertEqual(second['daily_gross_paise'],20000);w=a.weekly(e,self.db);self.assertTrue(w['complete']);self.assertEqual(w['weekly_gross_paise'],40000);self.assertEqual(w['weekly_net_paise'],40000-first['accrued_cost_paise'])
+  e.fill(self.db,self.signal(),self.quote(2500),T);self.db.batch([('UPDATE paper_positions SET mark_price=2510,mark_at=? WHERE namespace=?',(T.replace(hour=15,minute=29).isoformat(),e.NS))]);e.now=lambda:T.replace(hour=16,minute=10);first=a.eod(e,self.db);a.eod(e,self.db);self.assertGreater(first['daily_gross_paise'],0);self.assertEqual(len(self.db.query('SELECT * FROM paper_eod WHERE namespace=?',(e.NS,))),1)
+  later=T.replace(day=11,hour=16,minute=10);e.now=lambda:later;self.db.batch([('UPDATE paper_positions SET mark_price=2520,mark_at=? WHERE namespace=?',(later.replace(hour=15,minute=29).isoformat(),e.NS))]);second=a.eod(e,self.db);self.assertEqual(second['daily_gross_paise'],20000);w=a.weekly(e,self.db);self.assertTrue(w['complete']);self.assertEqual(w['weekly_gross_paise'],first['daily_gross_paise']+second['daily_gross_paise']);self.assertEqual(w['weekly_net_paise'],w['weekly_gross_paise']-first['accrued_cost_paise'])
  def test_missing_prior_eod_daily_unavailable(self):
   e.fill(self.db,self.signal(),self.quote(),T);e.now=lambda:T.replace(day=11,hour=16);r=a.eod(e,self.db);self.assertIsNone(r['daily_gross_paise']);self.assertFalse(r['daily_baseline_known'])
  def test_partial_week_unavailable(self):
@@ -124,7 +130,7 @@ class AutomationTests(unittest.TestCase):
  def test_missing_mark_cannot_produce_partial_group_profit(self):
   e.fill(self.db,self.signal(),self.quote(),T);self.db.batch([('UPDATE paper_positions SET mark_price=NULL WHERE namespace=?',(e.NS,))]);r=a.finance(e,self.db);self.assertIsNone(r['gross_total_paise']);self.assertIsNone(r['by_strategy']['1']['gross_paise'])
  def test_cashflow_ledger_is_integer_paise(self):
-  e.fill(self.db,self.signal(),self.quote(2500),T);r=self.db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,))[0];cost=self.db.call({'action':'estimate','price':2500,'quantity':20,'side':'BUY','prior':0,'priorBuy':0,'dp':False});self.assertEqual(r['gross_cashflow_paise'],-5000000);self.assertEqual(r['net_cashflow_paise'],-5000000-cost['total'])
+  filled=e.fill(self.db,self.signal(),self.quote(2500),T);r=self.db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,))[0];cost=self.db.call({'action':'estimate','price':filled['price'],'quantity':20,'side':'BUY','prior':0,'priorBuy':0,'dp':False});gross=-int((Decimal(str(filled['price']))*20*100).quantize(Decimal('1')));self.assertEqual(r['gross_cashflow_paise'],gross);self.assertEqual(r['net_cashflow_paise'],gross-cost['total'])
  def test_same_bar_reentry_blocked_after_close(self):
   e.fill(self.db,self.signal(),self.quote(),T);e.fill(self.db,self.signal('SELL'),self.quote(),T);r=e.fill(self.db,self.signal(),self.quote(),T);self.assertFalse(r['filled']);self.assertEqual(r['reason'],'same_bar_reentry_guard');self.assertEqual(len(self.db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,))),2)
  def test_policy_registration_is_immutable(self):

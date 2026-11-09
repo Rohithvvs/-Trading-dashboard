@@ -31,7 +31,7 @@ The engine is not installed on the bot box.
 
 - [x] ADV floor placeholder ₹10 crore, lagged 20-session median, `ADV_FILTER_SKIP`. Review status remains `pending_funnel_report`. Exits are not filtered.
 - [x] Participation cap 0.005 × ADV, entries only, skip not scale, `ADV_PARTICIPATION_CAP`. Exits are not skipped.
-- [ ] Tiered slippage and 1.5× stress
+- [x] Tiered slippage. 8 bps through ₹20 crore, 5 bps above, plus 10 × notional / (0.005 × ADV). Stress 1.5× is implemented and off. Share count stays on the reference price.
 
 ## Task Group D — open price
 

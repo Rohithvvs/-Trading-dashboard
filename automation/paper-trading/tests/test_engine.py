@@ -10,7 +10,7 @@ class PaperTests(unittest.TestCase):
   cls.db=e.DB(str(e.ROOT/'tests'/'test_')+uuid.uuid4().hex+'.sqlite');e.NS='test_fixture';e.init(cls.db)
   cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL,turnover REAL)',())]);e.now=lambda:T
  def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T
- def seed_adv(self,symbol,turnover,sessions=20):
+ def seed_adv(self,symbol,turnover,sessions=40):
   self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',(symbol,))])
   if sessions:self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close,turnover) VALUES(?,?,?,?)',(symbol,(T.date()-timedelta(days=i)).isoformat(),100,turnover)) for i in range(1,sessions+1)])
  def signal(self,side='BUY',symbol='RELIANCE-EQ',strategy=1,eligible='2026-11-09'):
@@ -21,9 +21,9 @@ class PaperTests(unittest.TestCase):
   return s
  def quote(self,p=100,age=0):return {'symbol':'RELIANCE-EQ','price':p,'quote_at':(T-timedelta(seconds=age)).isoformat()}
  def test_buy_duplicate_exit_and_pnl(self):
-  s=self.signal();self.assertTrue(e.fill(self.db,s,self.quote(),T)['filled']);self.assertFalse(e.fill(self.db,s,self.quote(),T)['filled'])
-  out=e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertEqual(out['realized_pnl'],5000)
-  p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],5000);self.assertEqual(p['latest_known_total_pnl_INR'],5000);self.assertEqual(len(self.db.positions()),0)
+  s=self.signal();buy=e.fill(self.db,s,self.quote(),T);self.assertTrue(buy['filled']);self.assertEqual(buy['qty'],500);self.assertEqual(buy['price'],100.09);self.assertFalse(e.fill(self.db,s,self.quote(),T)['filled'])
+  out=e.fill(self.db,self.signal('SELL'),self.quote(110),T);self.assertLess(out['price'],110);self.assertEqual(out['realized_pnl'],(out['price']-buy['price'])*buy['qty'])
+  p=e.pnl(self.db);self.assertEqual(round(p['daily_mark_to_market_pnl_INR'],2),round(out['realized_pnl'],2));self.assertEqual(round(p['latest_known_total_pnl_INR'],2),round(out['realized_pnl'],2));self.assertEqual(len(self.db.positions()),0)
  def test_multistock_and_strategy_separation(self):
   for sym,strategy in [('RELIANCE-EQ',1),('RELIANCE-EQ',2),('TCS-EQ',1)]:self.assertTrue(e.fill(self.db,self.signal(symbol=sym,strategy=strategy),self.quote(),T)['filled'])
   self.assertEqual(len(self.db.positions()),3)
@@ -71,7 +71,7 @@ class PaperTests(unittest.TestCase):
   self.assertEqual(self.db.query('SELECT execution_path FROM paper_fills WHERE namespace=?',(e.NS,))[0]['execution_path'],'LTP_LEGACY')
   decision=self.db.query('SELECT * FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]
   self.assertEqual(decision['decision_type'],'ENTRY');self.assertEqual(decision['cause'],'filled');self.assertEqual(decision['execution_path'],'LTP_LEGACY')
-  payload=json.loads(decision['payload_json']);self.assertEqual(payload['quantity'],500);self.assertEqual(payload['price'],100);self.assertEqual(payload['open_positions_before'],0);self.assertIn('strategy_version',payload)
+  payload=json.loads(decision['payload_json']);self.assertEqual(payload['quantity'],500);self.assertEqual(payload['price'],100.09);self.assertEqual(payload['reference_price'],100);self.assertEqual(payload['slippage_rule'],'tiered_adv_slippage');self.assertEqual(payload['open_positions_before'],0);self.assertIn('strategy_version',payload)
   self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
   self.db.batch([('UPDATE paper_decisions SET cause=? WHERE namespace=? AND seq=?',('tampered',e.NS,decision['seq']))])
   self.assertFalse(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
@@ -139,6 +139,16 @@ class PaperTests(unittest.TestCase):
   held=self.signal(symbol='TCS-EQ');self.assertTrue(e.fill(self.db,held,self.quote(),T)['filled'])
   self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900003,T.date().isoformat(),2,'TCS-EQ','INE467B01029','BUY',9000000000,version,'{}',0,T.isoformat(),0,0))])
   self.assertTrue(e.fill(self.db,self.signal('SELL',symbol='TCS-EQ'),self.quote(110),T)['filled'])
+ def test_tiered_slippage_keeps_the_share_count(self):
+  s=self.signal();bought=e.fill(self.db,s,self.quote(),T);self.assertEqual(bought['qty'],500);self.assertEqual(bought['price'],100.09)
+  normal=self.db.call({'action':'slippage','adv_paise':20000000000,'order_paise':5000000,'reference_paise':10000,'side':'BUY','stress':False})
+  self.assertEqual(normal['base_bps'],8);self.assertEqual(normal['price'],100.09)
+  above=self.db.call({'action':'slippage','adv_paise':25000000000,'order_paise':5000000,'reference_paise':10000,'side':'BUY','stress':False})
+  self.assertEqual(above['base_bps'],5);self.assertLess(above['price'],normal['price'])
+  stress=self.db.call({'action':'slippage','adv_paise':20000000000,'order_paise':5000000,'reference_paise':10000,'side':'BUY','stress':True})
+  self.assertGreater(stress['price'],normal['price'])
+  rich=self.signal(strategy=2);self.seed_adv('RELIANCE-EQ',250000000);filled=e.fill(self.db,rich,self.quote(),T)
+  self.assertEqual(filled['qty'],500);self.assertEqual(filled['price'],above['price'])
  def test_insufficient_sleeve_cash_keeps_the_entry_pending(self):
   # ₹4,99,500 already spent in paise. ₹500 remains, which cannot fund a ₹50,000 entry plus fees.
   self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900001,'2026-11-06',1,'RELIANCE-EQ','INE002A01018','BUY',49950000,'FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_07_v1','{}',0,'2026-11-06T10:00:00+05:30',-49950000,-49950000))])
@@ -171,7 +181,8 @@ class PaperTests(unittest.TestCase):
   e.fill(self.db,self.signal(strategy=7),self.quote(),T)
   class Feed:
    def quotes(_,symbols):return {'RELIANCE-EQ':self.quote(85)}
-  r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertEqual(fills[-1]['price'],85);self.assertEqual(fills[-1]['realized_pnl'],-7500)
+  r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertLess(fills[-1]['price'],85);self.assertNotEqual(fills[-1]['price'],90)
+  exit_decision=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]['payload_json']);self.assertEqual(exit_decision['reference_price'],85);self.assertEqual(exit_decision['slippage_rule'],'tiered_adv_slippage')
  def test_closed_monitor_no_quotes(self):
   e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST)
   class Feed:
@@ -180,7 +191,7 @@ class PaperTests(unittest.TestCase):
  def test_daily_start_mark_not_entry_basis(self):
   # Position opened during prior special session, cost90; previous completed close100; current mark105.
   yesterday=datetime(2026,11,8,14,30,tzinfo=e.IST);s=self.signal(eligible='2026-11-08');q={'price':90,'quote_at':yesterday.isoformat()};self.assertTrue(e.fill(self.db,s,q,yesterday)['filled'])
-  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close) VALUES(?,?,?)',('RELIANCE-EQ','2026-11-08',100)),('UPDATE paper_positions SET mark_price=?,mark_at=? WHERE namespace=?',(105,T.isoformat(),e.NS))]);p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],2775);self.assertEqual(p['latest_known_total_pnl_INR'],8325)
+  self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close) VALUES(?,?,?)',('RELIANCE-EQ','2026-11-08',100)),('UPDATE paper_positions SET mark_price=?,mark_at=? WHERE namespace=?',(105,T.isoformat(),e.NS))]);pos=self.db.positions()[0];p=e.pnl(self.db);self.assertEqual(p['daily_mark_to_market_pnl_INR'],2775);self.assertEqual(p['latest_known_total_pnl_INR'],(105-pos['entry_price'])*pos['qty'])
  def test_pnl_snapshot_idempotent(self):
   e.pnl(self.db);e.pnl(self.db);self.assertEqual(len(self.db.query('SELECT * FROM paper_pnl WHERE namespace=?',(e.NS,))),1)
  def test_stale_marks_labeled(self):

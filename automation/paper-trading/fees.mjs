@@ -20,3 +20,18 @@ export function allocateOvernightDp(turnovers){
  const dp=split(1250n),gst=split(225n);
  return dp.map((d,i)=>({dp:Number(d),dp_gst:Number(gst[i])}));
 }
+function inrFromPaise(p){const v=BigInt(p);const whole=v/100n,frac=v%100n;return Number(whole.toString()+'.'+frac.toString().padStart(2,'0'));}
+// bps = base + 10 × (notional / (0.005 × ADV)). Base is 8 through ₹20 crore and 5 above. Stress multiplies the whole bps by 1.5.
+// The returned price is the reference rounded half-up to paise. Quantity stays on the reference price.
+export function executionSlippage({advPaise,orderPaise,referencePaise,side,stress=false}){
+ const adv=BigInt(advPaise),order=BigInt(orderPaise),ref=BigInt(referencePaise);
+ if(adv<=0n||order<=0n||ref<=0n||!['BUY','SELL'].includes(side))throw Error('slippage_inputs');
+ const base=adv<=200000000n*100n?8n:5n;
+ let num=base*adv+2000n*order,den=adv;
+ if(stress){num*=3n;den*=2n;}
+ if(num>BigInt(Number.MAX_SAFE_INTEGER)||den>BigInt(Number.MAX_SAFE_INTEGER))throw Error('slippage_bounds');
+ const scale=10000n*den;const bumped=side==='BUY'?scale+num:scale-num;
+ if(bumped<=0n)throw Error('slippage_bounds');
+ const out=div(ref*bumped,scale);if(out<=0n||out>9007199254740991n)throw Error('slippage_bounds');
+ return {price_paise:Number(out),price:inrFromPaise(out),base_bps:Number(base),bps_numerator:Number(num),bps_denominator:Number(den),stress:!!stress};
+}
