@@ -24,7 +24,7 @@ The engine is not installed on the bot box.
 - [x] Exits first, then `sha256(session|symbol|freeze_capital_v1)`, then strategy 01–07
 - [x] ISIN cap 3, `ISIN_CAP`
 - [x] Sleeve cash, `INSUFFICIENT_CASH`
-- [ ] Shadow ledger does not consume the ISIN cap
+- [x] Shadow ledger does not consume the ISIN cap. ISIN-blocked buys are recorded there. Shadow-only exits are still open.
 - [ ] Pro-rata DP
 
 ## Task Group C — ADV, participation, slippage

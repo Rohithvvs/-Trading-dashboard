@@ -93,6 +93,16 @@ class PaperTests(unittest.TestCase):
   e.monitor(self.db,Feed())
   self.assertEqual(sorted(p['strategy'] for p in self.db.positions()),[1,2,3])
   self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND strategy=4',(e.NS,))[0]['status'],'pending')
+ def test_shadow_entry_does_not_consume_the_isin_cap(self):
+  for strategy in (1,2,3):self.assertTrue(e.fill(self.db,self.signal(symbol='RELIANCE-EQ',strategy=strategy),self.quote(),T)['filled'])
+  skipped=self.signal(symbol='RELIANCE-EQ',strategy=4);r=e.fill(self.db,skipped,self.quote(),T)
+  self.assertEqual(r['reason'],'ISIN_CAP');self.assertTrue(r['shadow_recorded'])
+  self.assertEqual(len(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'RELIANCE-EQ'))),3)
+  self.assertEqual(self.db.query('SELECT qty FROM paper_shadow_positions WHERE namespace=? AND strategy=4 AND symbol=?',(e.NS,'RELIANCE-EQ'))[0]['qty'],500)
+  e.fill(self.db,skipped,self.quote(),T)
+  self.assertEqual(len(self.db.query('SELECT * FROM paper_shadow_costs WHERE namespace=? AND signal_id=?',(e.NS,skipped['id']))),1)
+  self.assertTrue(e.fill(self.db,self.signal(symbol='TCS-EQ',strategy=5),self.quote(),T)['filled'])
+  self.assertEqual(len(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'RELIANCE-EQ'))),3)
  def test_insufficient_sleeve_cash_keeps_the_entry_pending(self):
   # ₹4,99,500 already spent in paise. ₹500 remains, which cannot fund a ₹50,000 entry plus fees.
   self.db.batch([('INSERT INTO paper_fill_costs(namespace,fill_id,day,strategy,symbol,isin,side,turnover_paise,policy_version,components_json,total_paise,entry_at,gross_cashflow_paise,net_cashflow_paise) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(e.NS,900001,'2026-11-06',1,'RELIANCE-EQ','INE002A01018','BUY',49950000,'FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_07_v1','{}',0,'2026-11-06T10:00:00+05:30',-49950000,-49950000))])

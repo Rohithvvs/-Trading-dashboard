@@ -23,7 +23,7 @@ def assert_freeze(policy=None):
     if p['max_positions_per_sleeve'] * p['target_notional_inr'] >= p['sleeve_capital_inr']:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     enforced = p.get('enforced', [])
-    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash')):
+    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger')):
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     return p
 

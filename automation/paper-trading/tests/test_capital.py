@@ -12,6 +12,7 @@ class CapitalTests(unittest.TestCase):
         self.assertIn('sleeve_slot_limit', cap.POLICY['enforced'])
         self.assertIn('isin_cap', cap.POLICY['enforced'])
         self.assertIn('sleeve_cash', cap.POLICY['enforced'])
+        self.assertIn('shadow_ledger', cap.POLICY['enforced'])
         self.assertNotIn('sleeve_cash', cap.POLICY['recorded_not_yet_enforced'])
         self.assertEqual(cap.POLICY['max_positions_per_sleeve'] * cap.POLICY['target_notional_inr'], 450000)
         self.assertLess(450000, cap.POLICY['sleeve_capital_inr'])
