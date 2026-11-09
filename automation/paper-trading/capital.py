@@ -23,12 +23,14 @@ def assert_freeze(policy=None):
     if p['max_positions_per_sleeve'] * p['target_notional_inr'] >= p['sleeve_capital_inr']:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     enforced = p.get('enforced', [])
-    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder')):
+    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder', 'adv_participation_cap')):
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     # ₹10 crore is the placeholder floor. It is not a reviewed freeze until the funnel report is reviewed.
     if p.get('adv_floor_inr') != 100_000_000 or p.get('adv_lookback_sessions') != 20 or p.get('adv_lag_sessions') != 1:
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     if p.get('adv_filter_cause') != 'ADV_FILTER_SKIP' or p.get('adv_floor_review') != 'pending_funnel_report':
+        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+    if p.get('participation_rate') != 0.005 or p.get('participation_cause') != 'ADV_PARTICIPATION_CAP':
         raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
     return p
 

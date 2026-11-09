@@ -20,6 +20,8 @@
   "adv_lag_sessions": 1,
   "adv_filter_cause": "ADV_FILTER_SKIP",
   "adv_floor_review": "pending_funnel_report",
-  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder"],
-  "recorded_not_yet_enforced": ["adv_participation_cap", "tiered_slippage", "execution_path"]
+  "participation_rate": 0.005,
+  "participation_cause": "ADV_PARTICIPATION_CAP",
+  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap"],
+  "recorded_not_yet_enforced": ["tiered_slippage", "execution_path"]
 }
