@@ -70,7 +70,7 @@ The engine is not installed on the bot box.
 - [x] A1 schema (`support_findings`, immutable status events via `status_seq`, stable `finding_id`, `support_checkpoints`)
 - [x] A2 consumer (keyset checkpoint consumer over `paper_events` and `paper_decisions` grouped by `correlation_id`)
 - [x] A3 detectors (`coverage_gap`, `incomplete_lifecycle` with timeout `None`, `unexpected_skip`, `placeholder_text`, `reconstruction_failure`, `monitor_staleness`, `named_cause_dump`)
-- [ ] A4 reporter
+- [x] A4 reporter (`support_agent.session_report` with detector/status/severity breakdown and `named_causes` summary)
 - [ ] A5 schedule
 - [ ] A6 observation mode
 - [ ] B tests

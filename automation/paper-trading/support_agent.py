@@ -434,3 +434,42 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
     }
 
 
+def session_report(db, namespace, session_day, out_dir=None):
+    """Build a deterministic support session report from append-only findings."""
+    session_day = str(session_day)
+    findings = current_findings(db, namespace, session_day)
+    by_detector = {}
+    by_status = {s: 0 for s in VALID_STATUSES}
+    by_severity = {s: 0 for s in VALID_SEVERITIES}
+    named_causes = {}
+    for f in findings:
+        det = f['detector']
+        by_detector[det] = by_detector.get(det, 0) + 1
+        by_status[f['status']] = by_status.get(f['status'], 0) + 1
+        by_severity[f['severity']] = by_severity.get(f['severity'], 0) + 1
+        if det == 'named_cause_dump':
+            named_causes = f.get('details', {}).get('cause_counts', {})
+    report = {
+        'namespace': namespace,
+        'session_day': session_day,
+        'total_findings': len(findings),
+        'open_findings': by_status['OPEN'],
+        'by_detector': by_detector,
+        'by_status': by_status,
+        'by_severity': by_severity,
+        'named_causes': named_causes,
+        'decision_chain_intact': by_detector.get('reconstruction_failure', 0) == 0,
+        'incomplete_lifecycle_timeout_minutes': INCOMPLETE_LIFECYCLE_MINUTES,
+        'checkpoint': get_checkpoint(db, namespace),
+        'findings': findings,
+    }
+    if out_dir is not None:
+        from pathlib import Path
+        target = Path(out_dir) / f'support-{session_day}.json'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding='utf8')
+        report['report_path'] = str(target)
+    return report
+
+
+

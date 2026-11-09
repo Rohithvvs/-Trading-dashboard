@@ -123,6 +123,20 @@ class SupportAgentTests(unittest.TestCase):
         again = sa.run_detectors(self.db, 'test_ns', day)
         self.assertEqual(again['findings_created'], 0)
 
+    def test_a4_session_reporter_summarizes_findings_and_writes_json(self):
+        import tempfile
+        day = '2026-11-09'
+        sa.append_finding(self.db, 'test_ns', 'coverage_gap', 'run-1', '2026-11-09T09:15:00+00:00', day, severity='WARN')
+        sa.append_finding(self.db, 'test_ns', 'named_cause_dump', f'named_cause_dump:{day}', '2026-11-09T09:15:00+00:00', day, severity='INFO', details={'cause_counts': {'ADV_FILTER_SKIP': 2}})
+        with tempfile.TemporaryDirectory() as tmp:
+            rep = sa.session_report(self.db, 'test_ns', day, out_dir=tmp)
+            self.assertEqual(rep['total_findings'], 2)
+            self.assertEqual(rep['open_findings'], 2)
+            self.assertEqual(rep['by_detector']['coverage_gap'], 1)
+            self.assertEqual(rep['named_causes'], {'ADV_FILTER_SKIP': 2})
+            self.assertTrue(rep['decision_chain_intact'])
+            self.assertTrue(Path(rep['report_path']).exists())
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
