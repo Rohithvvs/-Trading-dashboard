@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS support_checkpoints(namespace TEXT PRIMARY KEY,last_r
 
 
 def init(db):
-    db.batch([(s.strip(), ()) for s in SCHEMA.split(';') if s.strip()])
+    _write_support_only(db, [(s.strip(), ()) for s in SCHEMA.split(';') if s.strip()])
 
 
 def finding_id(detector, correlation_id, first_event_at):
@@ -61,6 +61,24 @@ def finding_id(detector, correlation_id, first_event_at):
 
 def _utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+ALLOWED_WRITE_TABLES = ('support_findings', 'support_checkpoints')
+
+
+def _write_support_only(db, statements):
+    """Enforce that the Support Agent never mutates trading tables."""
+    for sql, _ in statements:
+        norm = ' '.join(str(sql).strip().split()).upper()
+        if not any(
+            norm.startswith(f'INSERT INTO {t.upper()}')
+            or norm.startswith(f'CREATE TABLE IF NOT EXISTS {t.upper()}')
+            or (norm.startswith('CREATE INDEX IF NOT EXISTS ') and f' ON {t.upper()}(' in norm)
+            for t in ALLOWED_WRITE_TABLES
+        ):
+            raise PermissionError(f'support_agent_write_violation:{sql}')
+    return db.batch(statements)
+
 
 
 def append_finding(db, namespace, detector, correlation_id, first_event_at, session_day, severity='WARN', status='OPEN', details=None, observation_only=True, notified=False, recorded_at=None):
@@ -81,7 +99,7 @@ def append_finding(db, namespace, detector, correlation_id, first_event_at, sess
     obs_flag = 1 if observation_only else 0
     notif_flag = 0 if observation_only else (1 if notified else 0)
     payload = json.dumps(details or {}, sort_keys=True, separators=(',', ':'), default=str)
-    db.batch([(
+    _write_support_only(db, [(
         'INSERT INTO support_findings(namespace,finding_id,status_seq,detector,correlation_id,first_event_at,session_day,severity,status,observation_only,notified,details_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (namespace, fid, seq, str(detector), str(correlation_id), str(first_event_at), str(session_day), severity, status, obs_flag, notif_flag, payload, stamp),
     )])
@@ -106,7 +124,7 @@ def transition_finding(db, namespace, fid, new_status, note=None, recorded_at=No
     else:
         details = {**details, 'previous_status': latest['status']}
     stamp = recorded_at or _utc_now()
-    db.batch([(
+    _write_support_only(db, [(
         'INSERT INTO support_findings(namespace,finding_id,status_seq,detector,correlation_id,first_event_at,session_day,severity,status,observation_only,notified,details_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (
             namespace,
@@ -195,7 +213,7 @@ def consume_checkpoint(db, namespace, batch_limit=500, recorded_at=None):
     next_seq = int(decisions[-1]['seq']) if decisions else cp['last_decision_seq']
     stamp = recorded_at or _utc_now()
     if events or decisions:
-        db.batch([(
+        _write_support_only(db, [(
             'INSERT INTO support_checkpoints(namespace,last_recorded_at,last_event_id,last_decision_seq,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET last_recorded_at=excluded.last_recorded_at,last_event_id=excluded.last_event_id,last_decision_seq=excluded.last_decision_seq,updated_at=excluded.updated_at',
             (namespace, next_rec, next_eid, next_seq, stamp),
         )])

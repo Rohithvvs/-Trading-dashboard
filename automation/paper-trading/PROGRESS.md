@@ -73,4 +73,4 @@ The engine is not installed on the bot box.
 - [x] A4 reporter (`support_agent.session_report` with detector/status/severity breakdown and `named_causes` summary)
 - [x] A5 schedule (`support_agent.schedule_window`, `run_scheduled_pass`, and non-locking `engine.py support` supervision subcommand)
 - [x] A6 observation mode (`support_observation_only: true` in `config.json`, findings recorded with `observation_only=1, notified=0`, notifications suppressed)
-- [ ] B tests
+- [x] B tests (`tests/test_support_agent.py` covering A1–A6, write-table guard, hash-chain reconstruction verification, and append-only status transitions)

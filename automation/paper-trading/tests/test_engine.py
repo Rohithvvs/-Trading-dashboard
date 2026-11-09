@@ -9,7 +9,7 @@ class PaperTests(unittest.TestCase):
  def setUpClass(cls):
   cls.db=e.DB(str(e.ROOT/'tests'/'test_')+uuid.uuid4().hex+'.sqlite');e.NS='test_fixture';e.init(cls.db)
   cls.db.batch([('CREATE TABLE daily_ohlcv(symbol TEXT,trade_date TEXT,close REAL,turnover REAL)',())]);e.now=lambda:T
- def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T
+ def setUp(self):e.NS='test_'+uuid.uuid4().hex;e.now=lambda:T;self.db.batch([('DELETE FROM paper_corporate_actions',()),('DELETE FROM paper_price_bands',())])
  def seed_adv(self,symbol,turnover,sessions=40):
   self.db.batch([('DELETE FROM daily_ohlcv WHERE symbol=?',(symbol,))])
   if sessions:self.db.batch([('INSERT INTO daily_ohlcv(symbol,trade_date,close,turnover) VALUES(?,?,?,?)',(symbol,(T.date()-timedelta(days=i)).isoformat(),100,turnover)) for i in range(1,sessions+1)])
@@ -300,9 +300,10 @@ class PaperTests(unittest.TestCase):
    e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST);r=e.scan(self.db,None,bootstrap=True);self.assertEqual(r['signals_queued'],0)
    current[0]=history('2026-11-06');last=current[0].iloc[-1].copy();last['trade_date']='2026-11-08';import pandas as pd;current[0]=pd.concat([current[0],pd.DataFrame([last])],ignore_index=True)
    e.now=lambda:T;r=e.scan(self.db,None);self.assertEqual(r['signals_queued'],7);self.assertEqual(e.scan(self.db,None)['signals_queued'],0)
+   self.seed_adv('RELIANCE-EQ',200000000)
    class Feed:
     def quotes(_,symbols):return {'RELIANCE-EQ':self.quote()}
-   r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],7);self.assertEqual(e.monitor(self.db,Feed())['fills'],0);self.assertEqual(len(self.db.positions()),7)
+   r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],3);self.assertEqual(e.monitor(self.db,Feed())['fills'],0);self.assertEqual(len(self.db.positions()),3);self.assertEqual(len(self.db.query('SELECT * FROM paper_shadow_positions WHERE namespace=? AND qty>0',(e.NS,))),7)
   finally:e.universe=old_u;e.read_history=old_read;e.indicator=old_indicator;e.pf.evaluate=old_eval;e.pf.benchmark=old_benchmark;e.now=lambda:T
  def test_provider_error_rejected(self):
   q=self.quote();q['provider_status']='error';self.assertFalse(e.fill(self.db,self.signal(),q,T)['filled'])

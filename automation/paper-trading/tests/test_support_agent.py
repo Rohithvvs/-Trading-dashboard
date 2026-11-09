@@ -174,6 +174,69 @@ class SupportAgentTests(unittest.TestCase):
             self.assertEqual(r['observation_only'], 1)
             self.assertEqual(r['notified'], 0)
 
+    def test_b_checklist_read_only_guard_and_full_lifecycle(self):
+        import hashlib, json, tempfile
+        # 1. Attempting to write to any trading table via _write_support_only raises PermissionError
+        for tbl in ('paper_signals', 'paper_positions', 'paper_fills', 'paper_fill_costs', 'paper_decisions', 'paper_events'):
+            with self.assertRaises(PermissionError):
+                sa._write_support_only(self.db, [(f'UPDATE {tbl} SET status=?', ('hacked',))])
+            with self.assertRaises(PermissionError):
+                sa._write_support_only(self.db, [(f'DELETE FROM {tbl}', ())])
+
+        # 2. Valid hash-chained decision row passes reconstruction verification
+        day = '2026-11-09'
+        payload = {'price': 100.0, 'quantity': 500}
+        body = {
+            'namespace': 'test_ns',
+            'seq': 1,
+            'correlation_id': 'sig-ok-1',
+            'decision_type': 'ENTRY',
+            'strategy': 1,
+            'symbol': 'RELIANCE-EQ',
+            'signal_id': 'sig-ok-1',
+            'cause': 'filled',
+            'rule': '1',
+            'execution_path': 'FEED_OPEN',
+            'source_at': '2026-11-09T09:15:05+05:30',
+            'recorded_at': '2026-11-09T03:45:05+00:00',
+            'payload': payload,
+        }
+        prev = '0' * 64
+        ehash = hashlib.sha256((prev + '\n' + sa._stable_json(body)).encode('utf8')).hexdigest()
+        self.db.batch([(
+            'INSERT INTO paper_decisions(namespace,seq,correlation_id,decision_type,strategy,symbol,signal_id,cause,rule,execution_path,source_at,recorded_at,prev_hash,entry_hash,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            ('test_ns', 1, 'sig-ok-1', 'ENTRY', 1, 'RELIANCE-EQ', 'sig-ok-1', 'filled', '1', 'FEED_OPEN', '2026-11-09T09:15:05+05:30', '2026-11-09T03:45:05+00:00', prev, ehash, json.dumps(payload)),
+        )])
+        decisions = self.db.query('SELECT * FROM paper_decisions WHERE namespace=?', ('test_ns',))
+        self.assertEqual(sa.verify_decision_reconstruction(decisions), [])
+
+        # 3. Guard db.batch during full scheduled pass so any write to non-support tables fails the test
+        orig_batch = self.db.batch
+        def guarded_batch(stmts):
+            for sql, _ in stmts:
+                up = sql.strip().upper()
+                self.assertTrue(
+                    'SUPPORT_FINDINGS' in up or 'SUPPORT_CHECKPOINTS' in up,
+                    f'Unexpected write outside support tables: {sql}',
+                )
+            return orig_batch(stmts)
+        self.db.batch = guarded_batch
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = sa.run_scheduled_pass(self.db, 'test_ns', day, observation_only=True, out_dir=tmp)
+                self.assertEqual(out['status'], 'ok')
+                self.assertTrue(out['report']['decision_chain_intact'])
+                self.assertEqual(out['report']['named_causes'], {'filled': 1})
+                # Transition finding through WONT_FIX and verify append-only history
+                ncd_fid = sa.finding_id('named_cause_dump', f'named_cause_dump:{day}', '2026-11-09T09:15:05+05:30')
+                sa.transition_finding(self.db, 'test_ns', ncd_fid, 'WONT_FIX', note='informational dump')
+                cur = sa.current_findings(self.db, 'test_ns', day)
+                ncd = next(f for f in cur if f['finding_id'] == ncd_fid)
+                self.assertEqual(ncd['status'], 'WONT_FIX')
+                self.assertEqual(ncd['statuses'], ['OPEN', 'WONT_FIX'])
+        finally:
+            self.db.batch = orig_batch
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
