@@ -5,45 +5,88 @@ from pathlib import Path
 POLICY = json.loads((Path(__file__).resolve().parent / 'capital_policy.json').read_text())
 _PRICE = re.compile(r'^\d+(\.\d{1,2})?$')
 
-def assert_freeze(policy=None):
+ROOT = Path(__file__).resolve().parent
+LOCK_FILE = ROOT / 'freeze_lock.json'
+LOCKED_FILES = ('capital_policy.json', 'charge_policy.json', 'charge_rates.json')
+# Cause codes are protocol identifiers named by the freeze plan (B1), not tunable numbers.
+CAUSES = {'zero_share_cause': 'UNAFFORDABLE_ZERO_SHARES', 'sleeve_slot_cause': 'SLEEVE_SLOT_FULL', 'isin_cap_cause': 'ISIN_CAP', 'sleeve_cash_cause': 'INSUFFICIENT_CASH', 'adv_filter_cause': 'ADV_FILTER_SKIP', 'participation_cause': 'ADV_PARTICIPATION_CAP', 'strategy_pause_cause': 'KILL_PAUSE'}
+REQUIRED_ENFORCED = ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder', 'adv_participation_cap', 'tiered_slippage', 'execution_path', 'microstructure_guards', 'corporate_actions', 'kill_pause')
+POSITIVE_INTS = ('master_capital_inr', 'sleeve_capital_inr', 'strategy_count', 'target_notional_inr', 'max_positions_per_sleeve', 'max_strategies_per_isin', 'adv_floor_inr', 'adv_lookback_sessions', 'adv_lag_sessions', 'ucb_closed_trades', 'slippage_base_bps_through_20cr', 'slippage_base_bps_above_20cr', 'slippage_tier_threshold_inr')
+UNIT_FRACTIONS = ('participation_rate', 'sleeve_pause_drawdown', 'system_pause_drawdown', 'system_reinstatement_gap')
+ADV_REVIEW_STATES = ('pending_funnel_report', 'reviewed')
+
+
+def canonical(obj):
+    """Key-sorted compact JSON; db.mjs computes the same bytes for the same parsed policy."""
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
+
+
+def digest(obj):
+    return hashlib.sha256(canonical(obj).encode('utf-8')).hexdigest()
+
+
+def current_lock():
+    """Digests of the policy files as they are on disk now (used by `python3 capital.py --print-lock`)."""
+    return {name: digest(json.loads((ROOT / name).read_text())) for name in LOCKED_FILES}
+
+
+def _fail(reason):
+    raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED:' + reason)
+
+
+def assert_freeze(policy=None, lock=None):
+    """Fail closed unless the capital policy matches freeze_lock.json and is internally consistent.
+
+    Policy numbers live only in capital_policy.json. This function never repeats them: a change
+    is made in the JSON plus a refreshed freeze_lock.json (a deliberate, reviewable step), not in code.
+    """
     p = POLICY if policy is None else policy
-    if p.get('version') != 'freeze_capital_v1':
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('master_capital_inr') != 3500000 or p.get('sleeve_capital_inr') != 500000:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('strategy_count') != 7 or p['sleeve_capital_inr'] * p['strategy_count'] != p['master_capital_inr']:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('target_notional_inr') != 50000 or p.get('max_positions_per_sleeve') != 9 or p.get('max_strategies_per_isin') != 3:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('zero_share_cause') != 'UNAFFORDABLE_ZERO_SHARES' or p.get('sleeve_slot_cause') != 'SLEEVE_SLOT_FULL' or p.get('isin_cap_cause') != 'ISIN_CAP' or p.get('sleeve_cash_cause') != 'INSUFFICIENT_CASH':
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('slot_order_seed') != 'freeze_capital_v1':
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    # 9 x ₹50,000 = ₹4,50,000, which leaves ₹50,000 of the ₹5,00,000 sleeve for fees and slippage.
+    lk = json.loads(LOCK_FILE.read_text()) if lock is None else lock
+    if digest(p) != lk.get('files', {}).get('capital_policy.json'):
+        _fail('lock_mismatch')
+    if not isinstance(p.get('version'), str) or not p['version'] or p.get('version') != lk.get('capital_policy_version'):
+        _fail('version')
+    for key in POSITIVE_INTS:
+        v = p.get(key)
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            _fail(key)
+    for key in UNIT_FRACTIONS:
+        v = p.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < 1:
+            _fail(key)
+    for key in ('slippage_participation_multiplier_bps', 'slippage_stress_multiplier', 'ucb_one_sided_z', 'circuit_lock_haircut_pct_per_extra_day'):
+        v = p.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            _fail(key)
+    if p['sleeve_capital_inr'] * p['strategy_count'] != p['master_capital_inr']:
+        _fail('sleeves_do_not_sum_to_master')
+    # Fees and slippage need headroom: a full sleeve of target-notional trades must stay below sleeve capital.
     if p['max_positions_per_sleeve'] * p['target_notional_inr'] >= p['sleeve_capital_inr']:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+        _fail('no_fee_headroom')
+    if p['adv_lookback_sessions'] < 2:
+        _fail('adv_lookback_sessions')
+    for key, name in CAUSES.items():
+        if p.get(key) != name:
+            _fail(key)
+    if not isinstance(p.get('slot_order_seed'), str) or not p['slot_order_seed']:
+        _fail('slot_order_seed')
+    if p.get('share_rounding') != 'floor_notional_over_fill_price':
+        _fail('share_rounding')
+    if not isinstance(p.get('slippage_stress'), bool):
+        _fail('slippage_stress')
+    if p.get('adv_floor_review') not in ADV_REVIEW_STATES:
+        _fail('adv_floor_review')
+    strategies = p.get('drawdown_only_strategies')
+    if not isinstance(strategies, list) or any(isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= p['strategy_count'] for x in strategies):
+        _fail('drawdown_only_strategies')
     enforced = p.get('enforced', [])
-    if any(item not in enforced for item in ('integer_share_rounding', 'sleeve_slot_limit', 'isin_cap', 'sleeve_cash', 'shadow_ledger', 'adv_filter_placeholder', 'adv_participation_cap', 'tiered_slippage', 'execution_path', 'microstructure_guards', 'corporate_actions', 'kill_pause')):
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('sleeve_pause_drawdown') != 0.1 or p.get('system_pause_drawdown') != 0.08 or p.get('system_reinstatement_gap') != 0.03:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('ucb_closed_trades') != 30 or p.get('strategy_pause_cause') != 'KILL_PAUSE' or p.get('drawdown_only_strategies') != [3, 5]:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+    if any(item not in enforced for item in REQUIRED_ENFORCED) or any(item in p.get('recorded_not_yet_enforced', []) for item in REQUIRED_ENFORCED):
+        _fail('enforced')
+    # Capability guards: these say what the code implements, not what the numbers are.
+    if p['adv_lag_sessions'] != 1:
+        _fail('adv_lag_sessions_only_1_implemented')
     if p.get('hysteresis_shadow_trades') is not None:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if 'execution_path' in p.get('recorded_not_yet_enforced', []):
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    # ₹10 crore is the placeholder floor. It is not a reviewed freeze until the funnel report is reviewed.
-    if p.get('adv_floor_inr') != 100_000_000 or p.get('adv_lookback_sessions') != 20 or p.get('adv_lag_sessions') != 1:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('adv_filter_cause') != 'ADV_FILTER_SKIP' or p.get('adv_floor_review') != 'pending_funnel_report':
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('participation_rate') != 0.005 or p.get('participation_cause') != 'ADV_PARTICIPATION_CAP':
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('slippage_base_bps_through_20cr') != 8 or p.get('slippage_base_bps_above_20cr') != 5:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
-    if p.get('slippage_participation_multiplier_bps') != 10 or p.get('slippage_stress_multiplier') != 1.5 or p.get('slippage_stress') is not False:
-        raise SystemExit('FREEZE_CAPITAL_POLICY_REQUIRED')
+        _fail('hysteresis_rule_not_specified_by_plan')
     return p
 
 def slot_rank(session_date, symbol):
@@ -83,4 +126,7 @@ def integer_shares(fill_price, target_notional_inr=None):
         raise ValueError('target_notional')
     return (target * 100) // price_paise(fill_price)
 
-assert_freeze()
+if __name__ == '__main__' and '--print-lock' in __import__('sys').argv:
+    print(json.dumps({'files': current_lock(), 'capital_policy_version': POLICY['version']}, indent=2))
+else:
+    assert_freeze()

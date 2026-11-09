@@ -2,14 +2,22 @@
 
 Strategy pause uses the shadow book. System pause uses the capped book.
 A strategy stays paused until a manual override. The freeze names hysteresis as
-N new shadow trades and does not give N, so that path is not invented.
-System reinstatement is recovery to within 3 percent of the pre-pause peak, or a manual override.
+N new shadow trades and does not give N (capital_policy hysteresis_shadow_trades=null), so that path is not invented.
+System reinstatement is recovery to within system_reinstatement_gap of the pre-pause peak, or a manual override.
+All thresholds come from capital_policy.json; rule labels are generated from them.
 Peak resets on reinstatement.
 """
 import math
+from fractions import Fraction
 import capital as cap
 
 SLEEVE = cap.POLICY['sleeve_capital_inr'] * 100
+STRATEGIES = range(1, cap.POLICY['strategy_count'] + 1)
+
+
+def pct_label(fraction):
+    """0.1 -> '10', 0.08 -> '8', 0.035 -> '3_5' (stable rule names derived from policy)."""
+    return ('%g' % round(fraction * 100, 6)).replace('.', '_')
 MASTER = cap.POLICY['master_capital_inr'] * 100
 
 
@@ -17,7 +25,8 @@ def breaches(values, percent):
     """Return the peak that a later trough exceeds, or None. Exactly `percent` does not breach."""
     if not values:
         return None
-    num, den = int(round(percent * 1000)), 1000
+    frac = Fraction(str(percent))
+    num, den = frac.numerator, frac.denominator
     peak, hit = values[0], None
     for value in values:
         if value > peak:
@@ -30,8 +39,8 @@ def breaches(values, percent):
 def recovered(equity, peak, gap):
     if equity is None or peak is None or peak <= 0:
         return False
-    keep = int(round((1 - gap) * 1000))
-    return equity * 1000 >= peak * keep
+    keep = 1 - Fraction(str(gap))
+    return equity * keep.denominator >= peak * keep.numerator
 
 
 def upper_bound(pnls, z):
@@ -71,7 +80,8 @@ def plan(closes, trades, states, overrides, day, now):
         writes.append({'scope': scope, 'strategy': strategy, 'paused': 1 if paused else 0, 'cause': cause, 'peak_paise': peak, 'pre_pause_peak_paise': pre, 'baseline_day': baseline or '', 'paused_at': paused_at, 'updated_at': now})
         notes.append({'scope': scope, 'strategy': strategy, 'cause': 'KILL_PAUSE' if paused else 'reinstated', 'rule': rule, 'paused': bool(paused)})
 
-    for strategy in range(1, 8):
+    sleeve_pct, system_pct, gap_pct = pct_label(policy['sleeve_pause_drawdown']), pct_label(policy['system_pause_drawdown']), pct_label(policy['system_reinstatement_gap'])
+    for strategy in STRATEGIES:
         state = current.get(('strategy', strategy), {})
         baseline = state.get('baseline_day') or ''
         values = [int(r['equity_paise']) for r in _rows(closes, 'shadow', strategy, baseline)]
@@ -84,7 +94,7 @@ def plan(closes, trades, states, overrides, day, now):
             continue
         hit = breaches(values, policy['sleeve_pause_drawdown'])
         if hit is not None:
-            emit('strategy', strategy, True, 'sleeve_drawdown_exceeds_10pct', hit, hit, baseline, now, 'sleeve_net_drawdown_exceeds_10pct')
+            emit('strategy', strategy, True, f'sleeve_drawdown_exceeds_{sleeve_pct}pct', hit, hit, baseline, now, f'sleeve_net_drawdown_exceeds_{sleeve_pct}pct')
             continue
         if strategy in drawdown_only:
             continue
@@ -92,7 +102,7 @@ def plan(closes, trades, states, overrides, day, now):
         last = pnls[-window:]
         if len(last) == window and upper_bound(last, z) < 0:
             peak = values[-1] if values else SLEEVE
-            emit('strategy', strategy, True, 'ucb_net_average_trade_below_zero', peak, peak, baseline, now, 'ucb_of_30_net_trades_below_zero')
+            emit('strategy', strategy, True, 'ucb_net_average_trade_below_zero', peak, peak, baseline, now, f'ucb_of_{window}_net_trades_below_zero')
 
     state = current.get(('system', 0), {})
     baseline = state.get('baseline_day') or ''
@@ -102,12 +112,12 @@ def plan(closes, trades, states, overrides, day, now):
     back = recovered(latest, state.get('pre_pause_peak_paise'), policy['system_reinstatement_gap'])
     if paused and (_override(overrides, 'system', 0, state.get('paused_at')) or back):
         peak = latest if latest is not None else MASTER
-        rule = 'system_recovered_within_3pct_of_pre_pause_peak' if back else 'manual_override_reinstates_system'
+        rule = f'system_recovered_within_{gap_pct}pct_of_pre_pause_peak' if back else 'manual_override_reinstates_system'
         emit('system', 0, False, None, peak, None, day, None, rule)
     elif not paused:
         hit = breaches(values, policy['system_pause_drawdown'])
         if hit is not None:
-            emit('system', 0, True, 'system_drawdown_exceeds_8pct', hit, hit, baseline, now, 'master_net_drawdown_exceeds_8pct')
+            emit('system', 0, True, f'system_drawdown_exceeds_{system_pct}pct', hit, hit, baseline, now, f'master_net_drawdown_exceeds_{system_pct}pct')
     return writes, notes
 
 
@@ -141,7 +151,7 @@ def record_equity(e, db, day):
         return total
 
     capped, shadow = {}, {}
-    for strategy in range(1, 8):
+    for strategy in STRATEGIES:
         held = [p for p in positions if int(p['strategy']) == strategy]
         capped[strategy] = SLEEVE + costs.get(strategy, 0) + credits.get(strategy, 0) + value(held, lambda p: p['mark_price'] or p['entry_price'])
         sh = [p for p in shadows if int(p['strategy']) == strategy]
@@ -170,6 +180,6 @@ def evaluate(e, db, day, force=False):
     if writes:
         db.batch([('INSERT INTO paper_pause_state(namespace,scope,strategy,paused,cause,peak_paise,pre_pause_peak_paise,baseline_day,paused_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(namespace,scope,strategy) DO UPDATE SET paused=excluded.paused,cause=excluded.cause,peak_paise=excluded.peak_paise,pre_pause_peak_paise=excluded.pre_pause_peak_paise,baseline_day=excluded.baseline_day,paused_at=excluded.paused_at,updated_at=excluded.updated_at', (e.NS, w['scope'], w['strategy'], w['paused'], w['cause'], w['peak_paise'], w['pre_pause_peak_paise'], w['baseline_day'], w['paused_at'], w['updated_at'])) for w in writes])
     for note in notes:
-        e.decide(db, {'id': e.stable_id('pause', e.NS, note['scope'], note['strategy'], day, note['rule']), 'strategy': note['strategy'] or None, 'symbol': None}, e.now(), 'HOLD', note['cause'], note['rule'], {'ex_date': day, 'scope': note['scope'], 'strategy': note['strategy'], 'paused': note['paused'], 'hysteresis_shadow_trades': None})
+        e.decide(db, {'id': e.stable_id('pause', e.NS, note['scope'], note['strategy'], day, note['rule']), 'strategy': note['strategy'] or None, 'symbol': None}, e.now(), 'HOLD', note['cause'], note['rule'], {'ex_date': day, 'scope': note['scope'], 'strategy': note['strategy'], 'paused': note['paused'], 'hysteresis_shadow_trades': cap.POLICY['hysteresis_shadow_trades']})
     db.batch([('INSERT INTO paper_meta(namespace,key,value) VALUES(?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET value=excluded.value', (e.NS, 'pause_day', day))])
     return {'status': 'evaluated', 'changes': len(writes)}

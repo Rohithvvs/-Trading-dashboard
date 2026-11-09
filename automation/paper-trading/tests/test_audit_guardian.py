@@ -24,7 +24,7 @@ class LocalDB:
 class AuditTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);(self.root/'logs').mkdir();(self.root/'out').mkdir();self.t=datetime(2026,11,9,9,20,tzinfo=e.IST)
-  self.e=SimpleNamespace(ROOT=self.root,NS='test_audit',now=lambda:self.t,session=lambda d:None if d.weekday()>4 or d.isoformat()=='2026-11-10' else (time(9,15),time(15,30)),CFG={'poll_seconds':30});self.db=LocalDB();a.init(self.db);self.db.batch([(g.SCHEMA,())])
+  self.e=SimpleNamespace(ROOT=self.root,NS='test_audit',now=lambda:self.t,session=lambda d:None if d.weekday()>4 or d.isoformat()=='2026-11-10' else (time(9,15),time(15,30)),CFG={**json.loads((Path(__file__).resolve().parents[1]/'config.json').read_text()),'poll_seconds':30});self.db=LocalDB();a.init(self.db);self.db.batch([(g.SCHEMA,())])
  def tearDown(self):self.db.c.close();self.tmp.cleanup()
  def events(self):return self.db.query('SELECT * FROM paper_events')
  def test_allowlist_drops_headers_tokens_paths_and_raw_provider(self):

@@ -30,7 +30,7 @@ def checklist(e,strategy,f):
    4:lambda:{'ema20_above_ema50':x.ema20>x.ema50,'prior_ema20_at_or_below_ema50':p.ema20<=p.ema50,'close_above_sma200':c>x.sma200},
    5:lambda:{'close_at_or_below_lower_band':c<=x.bb_lower,'close_above_sma200':c>x.sma200},
    6:lambda:{'macd_above_signal':x.macd>x.signal,'prior_macd_at_or_below_signal':p.macd<=p.signal,'close_above_sma50':c>x.sma50},
-   7:lambda:{'close_above_sma200':c>x.sma200,'within10pct_high252':c>=.9*x.high252}}
+   7:lambda:{'close_above_sma200':c>x.sma200,'within10pct_high252':bool(x.within10pct)}}
   checks={k:bool(v) for k,v in conditions[strategy]().items()}
  except (AttributeError,IndexError):checks={'entry_condition':bool(x.entry_condition)}
  return {'data_current':True,'checks':checks,'all_filters_satisfied':bool(x.entry_condition),'rule':e.RULES[str(strategy)].get('entry',e.RULES[str(strategy)].get('long_entry')),'observed_values':clean(x.to_dict())}
@@ -39,7 +39,7 @@ def plan(e,strategy,x):
  close=float(x.close)
  try:indicative=e.cap.integer_shares(close)
  except ValueError:indicative=None
- return {'entry':'First fresh, verified in-session Fyers LTP after eligibility; not guaranteed open price','reference_close':close,'reference_bar':str(x.trade_date),'fixed_target':None,'exit_rule':r.get('exit',r.get('long_exit')),'stop':'10% below completed-close high-water from actual entry' if strategy==7 else 'No added fixed stop; frozen completed-candle exit rule','indicative_reference_trail':round(close*.9,2) if strategy==7 else None,'indicative_not_order_price':True,'target_notional_inr':e.cap.POLICY['target_notional_inr'],'share_rounding':'floor_notional_over_fill_price','indicative_shares_at_reference_close':indicative,'paper_only':True}
+ return {'entry':'Next eligible session official open from a fresh verified quote (FEED_OPEN), else auction or first-trade fallback (tagged); modeled slippage added; never a fabricated price','reference_close':close,'reference_bar':str(x.trade_date),'fixed_target':None,'exit_rule':r.get('exit',r.get('long_exit')),'stop':f"{round((1-e.TRAIL)*100,6):g}% below completed-close high-water from actual entry; completed daily bar only" if strategy==7 else 'No added fixed stop; frozen completed-candle exit rule','indicative_reference_trail':e.trail_level(close) if strategy==7 else None,'indicative_not_order_price':True,'target_notional_inr':e.cap.POLICY['target_notional_inr'],'share_rounding':'floor_notional_over_fill_price','indicative_shares_at_reference_close':indicative,'paper_only':True}
 
 def finance(e,db):
  t=e.now();day=str(t.date());ps=db.positions();fs=db.query('SELECT * FROM paper_fills WHERE namespace=? AND strategy BETWEEN 1 AND 7',(e.NS,));cost=db.query('SELECT * FROM paper_fill_costs WHERE namespace=?',(e.NS,));coh=db.query('SELECT * FROM paper_entry_cohorts WHERE namespace=?',(e.NS,))
@@ -144,7 +144,7 @@ def funnel(e,db,bar_date=None):
  syms=sorted({r['symbol'] for r in q_rows});lookback=e.cap.POLICY['adv_lookback_sessions'];floor_paise=e.cap.POLICY['adv_floor_inr']*100;adv_ok={}
  if syms:
   try:
-   special=sorted(e.CFG.get('special_sessions',{}));ex=(' AND trade_date NOT IN ('+','.join('?' for _ in special)+')') if special else ''
+   special=sorted(e.CFG.get('indicator_excluded_sessions',{}));ex=(' AND trade_date NOT IN ('+','.join('?' for _ in special)+')') if special else ''
    ohlcv=db.query('SELECT symbol,trade_date,COALESCE(turnover,CASE WHEN volume>0 AND close>0 THEN close*volume END) AS turnover FROM daily_ohlcv WHERE symbol IN ('+','.join('?' for _ in syms)+') AND trade_date<=?'+ex+' AND (turnover IS NOT NULL OR (volume>0 AND close>0)) ORDER BY symbol,trade_date DESC',[ *syms,str(bar),*special])
   except Exception:ohlcv=[]
   by_sym={}
@@ -153,7 +153,7 @@ def funnel(e,db,bar_date=None):
    if len(bucket)<lookback:bucket.append(round(float(r['turnover'])*100))
   for sym in syms:
    vals=sorted(by_sym.get(sym,[]))
-   adv_ok[sym]=len(vals)>=lookback and (vals[lookback//2-1]+vals[lookback//2])/2>=floor_paise
+   adv_ok[sym]=len(vals)>=lookback and (vals[lookback//2] if lookback%2 else (vals[lookback//2-1]+vals[lookback//2])/2)>=floor_paise
  open_by_strat={i:0 for i in range(1,8)};open_by_sym={}
  for p in db.positions():
   s=int(p['strategy']);open_by_strat[s]=open_by_strat.get(s,0)+1;open_by_sym.setdefault(p['symbol'],set()).add(s)
@@ -175,13 +175,13 @@ def funnel(e,db,bar_date=None):
 
 def _eod(e,db):
  t=e.now();ss=e.session(t.date())
- if t.weekday()>=5 or not ss or t.timetz().replace(tzinfo=None)<walltime(16):return {'status':'not_verified_weekday_eod','snapshot_written':False}
+ if t.weekday()>=5 or not ss or t.timetz().replace(tzinfo=None)<e.COMPLETED_CUTOFF:return {'status':'not_verified_weekday_eod','snapshot_written':False}
  r=finance(e,db);prior=db.query('SELECT day,report_json FROM paper_eod WHERE namespace=? AND day<? ORDER BY day DESC LIMIT 1',(e.NS,str(t.date())))
  expected=str(e.completed_day(t.replace(hour=0,minute=0,second=0,microsecond=0)));before=db.query('SELECT COUNT(*) AS n FROM paper_fills WHERE namespace=? AND substr(filled_at,1,10)<?',(e.NS,str(t.date())))[0]['n']
  p=json.loads(prior[0]['report_json']) if prior else None
  close=datetime.combine(t.date(),ss[1],tzinfo=e.IST);quality=[]
  for x in r['mark_observations']:
-  qt=datetime.fromisoformat(x['mark_at']) if x['mark_at'] else None;distance=(close-qt).total_seconds() if qt else None;quality.append({**x,'seconds_before_session_close':distance,'near_close':bool(qt and qt.date()==t.date() and 0<=distance<=300)})
+  qt=datetime.fromisoformat(x['mark_at']) if x['mark_at'] else None;distance=(close-qt).total_seconds() if qt else None;quality.append({**x,'seconds_before_session_close':distance,'near_close':bool(qt and qt.date()==t.date() and 0<=distance<=e.CFG['eod_near_close_seconds'])})
  r['closing_mark_quality']=quality;r['closing_valuation_complete']=not r['missing_marks'] and all(x['near_close'] for x in quality)
  known=bool(prior and prior[0]['day']==expected and p.get('closing_valuation_complete')) or (not prior and not before)
  r['daily_baseline_day']=prior[0]['day'] if prior else None;r['daily_baseline_known']=known;r['daily_gross_paise']=None;r['daily_net_accrued_paise']=None
@@ -203,7 +203,7 @@ def weekly(e,db):
  while d<=end:
   s=e.session(d)
   if s is None:return {'status':'calendar_unverified','weekly_net_paise':None}
-  if d.weekday()<5 and s and (d<end or e.now().hour>=16):expected.append(str(d))
+  if d.weekday()<5 and s and (d<end or e.now().timetz().replace(tzinfo=None)>=e.COMPLETED_CUTOFF):expected.append(str(d))
   d+=timedelta(days=1)
  complete=bool(values) and set(expected)=={x['day'] for x in rs} and all(x.get('daily_net_accrued_paise') is not None for x in values)
  return {'week_start':str(start),'through':rs[-1]['day'] if rs else None,'requested_through':str(end),'unfinalized_today_excluded':str(end) not in expected,'expected_sessions':expected,'snapshot_days':[x['day'] for x in rs],'complete':complete,'weekly_gross_paise':sum(x['daily_gross_paise'] for x in values) if complete else None,'weekly_net_paise':sum(x['daily_net_accrued_paise'] for x in values) if complete else None,'definition':'Sum verified daily CHANGES, never sum cumulative snapshots; incomplete week/session coverage unavailable.'}
@@ -213,7 +213,7 @@ def heartbeat(e,db,status,**detail):
  db.batch([('INSERT INTO paper_monitor_health(namespace,pid,heartbeat_at,status,detail_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET pid=excluded.pid,heartbeat_at=excluded.heartbeat_at,status=excluded.status,detail_json=excluded.detail_json',(e.NS,os.getpid(),e.now().isoformat(),status,e.js(detail)))])
 def health(e,db):
  rows=db.query('SELECT * FROM paper_monitor_health WHERE namespace=?',(e.NS,));r=rows[0] if rows else None
- return {'paper_only':True,'automation_session_open':active(e,e.now()),'calendar_valid_through':e.CFG['calendar_valid_through'],'calendar_verified':e.session(e.now().date()) is not None,'heartbeat':r,'heartbeat_stale':bool(active(e,e.now()) and (not r or (e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds()>(600 if r['status']=='backoff' else e.CFG.get('worker_stale_seconds',120)))),'scheduler_required':True,'poll_seconds':e.CFG['poll_seconds'],'calendar_review_warning':(date.fromisoformat(e.CFG['calendar_valid_through'])-e.now().date()).days<=14,'policy_review_warning':(date.fromisoformat(json.loads((e.ROOT/'charge_policy.json').read_text())['valid_through'])-e.now().date()).days<=14}
+ return {'paper_only':True,'automation_session_open':active(e,e.now()),'calendar_valid_through':e.CFG['calendar_valid_through'],'calendar_verified':e.session(e.now().date()) is not None,'heartbeat':r,'heartbeat_stale':bool(active(e,e.now()) and (not r or (e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds()>(e.CFG['backoff_heartbeat_stale_seconds'] if r['status']=='backoff' else e.CFG.get('worker_stale_seconds',120)))),'scheduler_required':True,'poll_seconds':e.CFG['poll_seconds'],'calendar_review_warning':(date.fromisoformat(e.CFG['calendar_valid_through'])-e.now().date()).days<=14,'policy_review_warning':(date.fromisoformat(json.loads((e.ROOT/'charge_policy.json').read_text())['valid_through'])-e.now().date()).days<=14}
 
 def ensure_monitor(e,db):
  if not active(e,e.now()):return {'status':'market_closed_or_calendar_unverified','started':False}
@@ -250,7 +250,7 @@ def worker(e,db,sleep=time.sleep,max_polls=None,api_factory=None):
       heartbeat(e,db,'waiting_for_engine_lock');al.emit(e,db,'worker_waiting',reason='singleton_busy',poll_seconds=delay);sleep(delay);continue
      try:
       heartbeat(e,db,'polling');api=api or factory();r=e.monitor(db,api);polls+=1;failures=0
-      if time.monotonic()-last_pnl>=300:e.pnl(db);last_pnl=time.monotonic()
+      if time.monotonic()-last_pnl>=e.CFG['pnl_snapshot_seconds']:e.pnl(db);last_pnl=time.monotonic()
       heartbeat(e,db,'healthy',polls=polls,last_result=r)
       al.emit(e,db,'worker_check',duration_ms=round((time.monotonic()-start)*1000),poll_seconds=delay,missed_checks=max(0,int((time.monotonic()-start)//delay)-1),status=r.get('status'))
      except Exception as ex:

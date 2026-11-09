@@ -14,7 +14,7 @@ def identity(pid,root,command,start):
 def heartbeat(e,db,status):
  start=(Path('/proc')/str(os.getpid())/'stat').read_text().split()[21];db.batch([('INSERT INTO paper_guardian_health VALUES(?,?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET pid=excluded.pid,process_start=excluded.process_start,session_day=excluded.session_day,heartbeat_at=excluded.heartbeat_at,status=excluded.status',(e.NS,os.getpid(),start,str(e.now().date()),e.now().isoformat(),status))])
 def ensure(e,db):
- if not armable(e,e.now()):return {'status':'closed','started':False,'worker_poll_seconds':e.CFG['poll_seconds'],'guardian_seconds':60}
+ if not armable(e,e.now()):return {'status':'closed','started':False,'worker_poll_seconds':e.CFG['poll_seconds'],'guardian_seconds':e.CFG['guardian_seconds']}
  with (e.ROOT/'guardian.lock').open('a+') as lease:
   try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:
@@ -24,7 +24,7 @@ def ensure(e,db):
   fd=os.open(e.ROOT/'logs'/'session-guardian.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
   try:p=subprocess.Popen([sys.executable,str(e.ROOT/'engine.py'),'guardian'],stdin=subprocess.DEVNULL,stdout=fd,stderr=fd,start_new_session=True,cwd=e.ROOT,pass_fds=(lease.fileno(),),env={**os.environ,'PAPER_GUARDIAN_LOCK_FD':str(lease.fileno())})
   finally:os.close(fd)
- return {'status':'starting','started':True,'pid':p.pid,'worker_poll_seconds':e.CFG['poll_seconds'],'guardian_seconds':60}
+ return {'status':'starting','started':True,'pid':p.pid,'worker_poll_seconds':e.CFG['poll_seconds'],'guardian_seconds':e.CFG['guardian_seconds']}
 def run(e,db,sleep=time.sleep,max_checks=480):
  if not armable(e,e.now()):return {'status':'closed','checks':0}
  fd=os.environ.get('PAPER_GUARDIAN_LOCK_FD')
@@ -33,17 +33,17 @@ def run(e,db,sleep=time.sleep,max_checks=480):
   try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
   except BlockingIOError:return {'status':'already_running','checks':0}
   initial=e.now().date();checks=0;began=time.monotonic();last=began
-  while e.now().date()==initial and armable(e,e.now()) and checks<max_checks and time.monotonic()-began<8*3600:
-   tick=time.monotonic();lag=max(0,tick-last-60) if checks else 0;last=tick
+  while e.now().date()==initial and armable(e,e.now()) and checks<max_checks and time.monotonic()-began<e.CFG['guardian_max_session_seconds']:
+   tick=time.monotonic();lag=max(0,tick-last-e.CFG['guardian_seconds']) if checks else 0;last=tick
    try:
     heartbeat(e,db,'checking');al.replay(e,db)
     if e.au.active(e,e.now()):
      h=e.au.health(e,db);r=h.get('heartbeat');age=(e.now()-datetime.fromisoformat(r['heartbeat_at'])).total_seconds() if r else None
-     result={'status':'auth_backoff','started':False} if r and r['status']=='paused_auth' and age<300 else e.au.ensure_monitor(e,db)
-     al.emit(e,db,'guardian_check',status=result.get('status'),started=result.get('started'),heartbeat_lag_seconds=age,missed_checks=int(lag//60),guardian_seconds=60,poll_seconds=e.CFG['poll_seconds'])
-    else:al.emit(e,db,'guardian_armed',status='waiting_for_verified_open',guardian_seconds=60,missed_checks=int(lag//60))
+     result={'status':'auth_backoff','started':False} if r and r['status']=='paused_auth' and age<e.CFG['guardian_auth_backoff_seconds'] else e.au.ensure_monitor(e,db)
+     al.emit(e,db,'guardian_check',status=result.get('status'),started=result.get('started'),heartbeat_lag_seconds=age,missed_checks=int(lag//e.CFG['guardian_seconds']),guardian_seconds=e.CFG['guardian_seconds'],poll_seconds=e.CFG['poll_seconds'])
+    else:al.emit(e,db,'guardian_armed',status='waiting_for_verified_open',guardian_seconds=e.CFG['guardian_seconds'],missed_checks=int(lag//e.CFG['guardian_seconds']))
    except Exception as ex:
-    al.emit(e,db,'guardian_failure',outcome='failed',severity='ERROR',error_code=type(ex).__name__,missed_checks=int(lag//60))
-   checks+=1;sleep(max(0,60-(time.monotonic()-tick)))
+    al.emit(e,db,'guardian_failure',outcome='failed',severity='ERROR',error_code=type(ex).__name__,missed_checks=int(lag//e.CFG['guardian_seconds']))
+   checks+=1;sleep(max(0,e.CFG['guardian_seconds']-(time.monotonic()-tick)))
   heartbeat(e,db,'stopped');al.emit(e,db,'guardian_stopped',reason='session_ended' if not armable(e,e.now()) else 'bound_reached',count=checks)
-  return {'status':'session_finished','checks':checks,'guardian_seconds':60}
+  return {'status':'session_finished','checks':checks,'guardian_seconds':e.CFG['guardian_seconds']}

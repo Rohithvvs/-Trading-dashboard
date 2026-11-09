@@ -4,7 +4,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 POLICY=json.loads((Path(__file__).parent/'prefilter_policy.json').read_text())
-MUHURAT_INDICATOR_EXCLUDED={'2026-11-08'}
+# Explicit calendar exclusions (freeze plan A9) are config, shared with engine.py and db.mjs.
+MUHURAT_INDICATOR_EXCLUDED=frozenset(json.loads((Path(__file__).parent/'config.json').read_text())['indicator_excluded_sessions'])
 SCHEMA=["CREATE TABLE IF NOT EXISTS paper_prefilter_policies(version TEXT PRIMARY KEY,policy_json TEXT NOT NULL)","CREATE TABLE IF NOT EXISTS paper_prefilter_states(namespace TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,status TEXT NOT NULL,metrics_json TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(namespace,bar_date,symbol,policy_version))","CREATE TABLE IF NOT EXISTS paper_entry_gate_proofs(namespace TEXT NOT NULL,signal_id TEXT NOT NULL,bar_date TEXT NOT NULL,symbol TEXT NOT NULL,policy_version TEXT NOT NULL,PRIMARY KEY(namespace,signal_id))"]
 def init(e,db):
  db.batch([(s,()) for s in SCHEMA]+[('INSERT OR IGNORE INTO paper_prefilter_policies VALUES(?,?)',(POLICY['version'],e.js(POLICY)))])

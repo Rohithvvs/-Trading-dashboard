@@ -68,3 +68,50 @@ The agent is read-only on trading state. It does not exist yet.
 5. Support agent A1–A6, then its tests.
 
 Do not deploy to the bot box from this repo. A GitHub push does not install `/workspace/paper-trading`.
+
+## Hardcoded-value audit and checklist status (9 Nov 2026, after hours)
+
+### Where every number now lives
+| Kind | File | Notes |
+|---|---|---|
+| Capital, sizing, caps, ADV, participation, slippage, pause thresholds, circuit haircut | `capital_policy.json` | `value_provenance` lists which are locked freeze placeholders, which the engine chose where the plan is silent (`ucb_one_sided_z`, `circuit_lock_haircut_pct_per_extra_day`, `slot_order_seed`), and which wait on the user (`adv_floor_inr` review, `hysteresis_shadow_trades`). |
+| Charge rates (brokerage, exchange, SEBI, IPFT, STT, stamp, GST, DP) | `charge_rates.json` (numeric) + `charge_policy.json` (dated text) | `fees.mjs` reads exact fractions; fails closed if `charge_rates.json` names a different charge-policy version. Verified identical fees/slippage on 160,000 random cases vs the previous code. |
+| Session times, completed-bar cutoff, Muhurat indicator exclusion, Strategy 07 trail fraction, Fyers routes/pacing, guardian timings, reconciliation warmup, reference-feed URLs | `config.json` | Strategy 07 trail fraction must equal the frozen rule text (`.9*H`) or the engine refuses to start. |
+| Lock | `freeze_lock.json` | SHA-256 of the three policy files. `engine.py` (via `capital.assert_freeze`) and `db.mjs` both refuse to run on a mismatch. Change = edit JSON + `python3 capital.py --print-lock` + commit; no code edit. |
+
+`capital.assert_freeze` and `db.mjs` no longer repeat policy numbers (the old `!==9`, `!==3`, `!==100000000`, `!==0.005`, `500000`, `1475`, `LIMIT 20`, `.9*` literals are gone). Remaining guards are structural (sleeves sum to master, fee headroom, cause names) or capability guards (`adv_lag_sessions` must be 1; `hysteresis_shadow_trades` must stay null until the user specifies the reinstatement rule). `tests/test_hardcode_audit.py` scans the engine sources and fails if any of those literals return.
+
+### Genuine bugs fixed
+- Exit orders passed a fixed `quantity=1` to `db.mjs`; the fill used the stored position size but the order audit logged 1 share. Exits now pass the real open quantity.
+- `UNAFFORDABLE_ZERO_SHARES` decision payload used the variable `quantity` (0) as a key instead of `'quantity'`.
+- Muhurat date `2026-11-08` was a literal in `engine.py` and `prefilter.py`; ADV window excluded every `special_sessions` date. All three now read `config.json` `indicator_excluded_sessions`.
+- Scan report hard-coded `excluded_audit_symbols: 59` / `original_audit_universe: 751`; now counted from the files.
+- Qualifier plan text still said entries fill at "First fresh ... LTP"; now describes the official-open path.
+- `reconciliation.run_harness` defaulted `trade_date` to `2026-11-09` (test value in production code); now required for a bhavcopy compare.
+- Guardian timings were literals despite `guardian_seconds` in config.
+- Dashboard copy repeated ₹35,00,000 / ₹5,00,000 / ₹50,000 / 9 / 3 / ₹10 crore / 0.90; now rendered from `capital_policy.json` and `config.json` (`src/policyText.js`).
+- Corporate-action, ASM/GSM and BE/BZ guards had code but nothing ever loaded data into `paper_corporate_actions` / `paper_price_bands`. `reference_feeds.py` now loads NSE corporate actions, NSE ASM/GSM and the Fyers symbol master during `scan --sync` (and `run.sh reference-feeds`). Fail-soft; special/unparsed dividends go to manual review because the plan never defines "extraordinary".
+
+### Checklist A (features)
+| Item | Status | Evidence |
+|---|---|---|
+| A1 capital, sleeves, 9 slots, ISIN cap 3, shadow ledger, kills by book, capped headline | Done | `capital.py`, `db.mjs` fill path, `pauses.py`, `automation.finance`; tests `test_capital`, `test_engine`, `test_pauses` |
+| A2 ADV floor, participation, ordering, integer shares, skip logging | Done in code; ADV ₹10 cr floor is a **placeholder pending user review** of the funnel report | `capital_policy.json adv_floor_review=pending_funnel_report` |
+| A3 tiered slippage, stress, STT/stamp/GST, DP pro-rata, STT rounding, dated config rates | Done | `charge_rates.json`, `fees.mjs`. DP uses the dated Fyers ₹12.50+GST, not the plan's approximate "₹13.5–18.5". |
+| A4 official open, fallback tag, execution_path, bhavcopy compare | Code done; **bhavcopy archive download blocked (HTTP 403 from this machine)** | `execution_reference`, `bhavcopy_compare.py` |
+| A5 Strategy 07 completed-bar stop | Done as implemented: stop level from completed closes only; open gap fills at open, intraday touch fills at the fixed stop level (frozen research rule). **User should confirm** this reading of "intraday polling is display-only". | `strategy_rules.json 7`, `_monitor` |
+| A6 circuits, pending_exit, t+1 expiry, BE/BZ, ASM/GSM, gap stops, haircut | Code done; data now loaded by `reference_feeds.py`. NSE ASM/GSM endpoints are intermittent (403) from this machine; the "fallback scaled to band width" heuristic is a flat-bar flag only. | `market_guard`, `reference_feeds.py` |
+| A7 corporate actions | Done; rights/merger/demerger/special dividends to manual review | `corporate_actions.py`, `reference_feeds.py` |
+| A8 kill/pause | Done except **hysteresis N (plan never sets it)**: strategy reinstatement is manual-only | `pauses.py` |
+| A9 Muhurat calendar entry, holiday scheduler | Done; config-driven | `config.json` |
+| A10 funnel/overlap, version hash, labels, skip causes | Done; funnel report exists, **review by user pending** | `automation.funnel/overlap`, dashboard labels |
+
+### Checklist B (tests)
+| Item | Status |
+|---|---|
+| B1 reconciliation month | **Blocked**: no complete live month (live logs start 7 Nov, first fills 9 Nov) and NSE bhavcopy archives return 403. Harness exists and refuses to claim acceptance. Two-day Stage A check: 6 Nov exact match; 8 Nov differences are all the Muhurat exclusion. |
+| B2 capital/sizing | Unit-tested |
+| B3 execution/microstructure | Unit-tested; live official-open fills start 11 Nov |
+| B4 kill/pause | Unit-tested except hysteresis N (undefined) |
+| B5 reporting | Funnel + overlap generated; dashboard labels tested; funnel review pending |
+| B6 acceptance | Not claimable until B1 and the two user decisions are closed |

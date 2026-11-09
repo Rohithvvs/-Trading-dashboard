@@ -6,7 +6,9 @@ post-adjustment open once that open exists. Rights, demergers, and mergers are n
 """
 import capital as cap
 
-MANUAL = {'RIGHTS', 'DEMERGER', 'MERGER'}
+MANUAL = {'RIGHTS', 'DEMERGER', 'MERGER', 'EXTRAORDINARY_DIVIDEND_REVIEW', 'DIVIDEND_UNPARSED_REVIEW'}
+# The freeze plan never defines 'extraordinary'; reference_feeds routes special/unparsed dividends here instead of inventing a threshold.
+DIVIDEND_REVIEW = {'EXTRAORDINARY_DIVIDEND_REVIEW', 'DIVIDEND_UNPARSED_REVIEW'}
 SCALED = {'SPLIT', 'BONUS', 'EXTRAORDINARY_DIVIDEND'}
 ORDER = {'SPLIT': 0, 'BONUS': 1, 'EXTRAORDINARY_DIVIDEND': 2, 'CASH_DIVIDEND': 3, 'RIGHTS': 4, 'DEMERGER': 5, 'MERGER': 6}
 
@@ -50,7 +52,7 @@ def apply(e, db, day, opens=None):
             if kind in MANUAL:
                 if not _seen(db, 'paper_manual_reviews', e.NS, strategy, symbol, day, kind):
                     db.batch([('INSERT INTO paper_manual_reviews(namespace,strategy,symbol,ex_date,kind,recorded_at) VALUES(?,?,?,?,?,?)', (e.NS, strategy, symbol, day, kind, at))])
-                    _note(e, db, strategy, symbol, kind, 'CORP_ACTION_MANUAL_REVIEW', 'rights_demerger_merger_not_applied', {'ex_date': day, 'kind': kind, 'quantity': qty})
+                    _note(e, db, strategy, symbol, kind, 'CORP_ACTION_MANUAL_REVIEW', 'dividend_classification_requires_manual_review' if kind in DIVIDEND_REVIEW else 'rights_demerger_merger_not_applied', {'ex_date': day, 'kind': kind, 'quantity': qty})
                 applied.append({'symbol': symbol, 'strategy': strategy, 'kind': kind, 'result': 'manual_review'})
                 continue
             if kind == 'CASH_DIVIDEND':

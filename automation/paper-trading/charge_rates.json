@@ -1,0 +1,13 @@
+{
+  "charge_policy_version": "FYERS_STANDARD_NSE_DELIVERY_ESTIMATE_2026_11_09_v2",
+  "note": "Numeric form of the dated rates described in charge_policy.json. Rates are exact fractions (num/den) so paise arithmetic stays integer. Changing any rate needs a new charge_policy.json version, a matching charge_policy_version here, and a refreshed freeze_lock.json.",
+  "brokerage": {"num": 3, "den": 1000, "cap_paise": 2000, "source_text": "min(20 INR,0.3% per executed order)"},
+  "exchange": {"num": 30699, "den": 1000000000, "source_text": "0.0030699% both sides"},
+  "sebi": {"num": 1, "den": 1000000, "source_text": "0.0001% both sides"},
+  "ipft": {"num": 1, "den": 1000000000, "source_text": "0.0000001% both sides"},
+  "clearing": {"num": 0, "den": 1, "source_text": "0 assumed"},
+  "stt": {"num": 1, "den": 1000, "round_to_paise": 100, "sides": ["BUY", "SELL"], "source_text": "0.1% delivery both sides; account/day cumulative rounded nearest INR"},
+  "stamp": {"num": 3, "den": 20000, "sides": ["BUY"], "source_text": "0.015% buy; cumulative day paise rounding"},
+  "gst": {"num": 18, "den": 100, "base": ["brokerage", "exchange", "sebi", "ipft"], "source_text": "18% brokerage+exchange+SEBI+IPFT; DP GST separate"},
+  "dp": {"charge_paise": 1250, "gst_paise": 225, "source_text": "12.50 INR plus 18% GST, once per ISIN/day on overnight delivery sell"}
+}

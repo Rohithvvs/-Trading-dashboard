@@ -49,6 +49,7 @@ class ReconciliationTests(unittest.TestCase):
             warmup_bars_by_symbol=warmup,
             feed_opens=feed_opens,
             bhav_rows=bhav_rows,
+            trade_date='2026-11-09',
             env_path='/nonexistent/.env',
             bhavcopy_dir='/nonexistent/bhavcopy',
         )

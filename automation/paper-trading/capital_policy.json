@@ -24,9 +24,11 @@
   "participation_cause": "ADV_PARTICIPATION_CAP",
   "slippage_base_bps_through_20cr": 8,
   "slippage_base_bps_above_20cr": 5,
+  "slippage_tier_threshold_inr": 200000000,
   "slippage_participation_multiplier_bps": 10,
   "slippage_stress_multiplier": 1.5,
   "slippage_stress": false,
+  "circuit_lock_haircut_pct_per_extra_day": 1,
   "sleeve_pause_drawdown": 0.1,
   "system_pause_drawdown": 0.08,
   "system_reinstatement_gap": 0.03,
@@ -34,8 +36,58 @@
   "ucb_one_sided_z": 1.6448536269514722,
   "ucb_z_source": "one_sided_normal_95_not_named_in_freeze",
   "hysteresis_shadow_trades": null,
-  "drawdown_only_strategies": [3, 5],
+  "drawdown_only_strategies": [
+    3,
+    5
+  ],
   "strategy_pause_cause": "KILL_PAUSE",
-  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap", "tiered_slippage", "execution_path", "microstructure_guards", "corporate_actions", "kill_pause"],
-  "recorded_not_yet_enforced": []
+  "enforced": [
+    "integer_share_rounding",
+    "sleeve_slot_limit",
+    "isin_cap",
+    "sleeve_cash",
+    "shadow_ledger",
+    "adv_filter_placeholder",
+    "adv_participation_cap",
+    "tiered_slippage",
+    "execution_path",
+    "microstructure_guards",
+    "corporate_actions",
+    "kill_pause"
+  ],
+  "recorded_not_yet_enforced": [],
+  "value_provenance": {
+    "locked_freeze_placeholders": [
+      "master_capital_inr",
+      "sleeve_capital_inr",
+      "strategy_count",
+      "target_notional_inr",
+      "max_positions_per_sleeve",
+      "max_strategies_per_isin",
+      "adv_floor_inr",
+      "adv_lookback_sessions",
+      "adv_lag_sessions",
+      "participation_rate",
+      "slippage_base_bps_through_20cr",
+      "slippage_base_bps_above_20cr",
+      "slippage_tier_threshold_inr",
+      "slippage_participation_multiplier_bps",
+      "slippage_stress_multiplier",
+      "sleeve_pause_drawdown",
+      "system_pause_drawdown",
+      "system_reinstatement_gap",
+      "ucb_closed_trades",
+      "drawdown_only_strategies"
+    ],
+    "note_locked": "Numbers named in the Freeze Version / Implementation Action Plan. They are plan placeholders, locked until the user changes them. Change them here (plus freeze_lock.json), never in code.",
+    "engine_chosen_where_plan_is_silent": {
+      "ucb_one_sided_z": "one-sided normal 95%; the plan names a UCB but not its confidence level",
+      "circuit_lock_haircut_pct_per_extra_day": "plan says a multi-day circuit-lock haircut must be available but gives no rate; 1% of the locked price per locked session after the first",
+      "slot_order_seed": "fixed seed for hash(date, symbol, seed) ordering"
+    },
+    "pending_user_decision": {
+      "adv_floor_inr": "freeze only after the funnel report is reviewed (adv_floor_review=pending_funnel_report)",
+      "hysteresis_shadow_trades": "plan names N new shadow trades for strategy reinstatement but never sets N; null keeps reinstatement manual-only"
+    }
+  }
 }

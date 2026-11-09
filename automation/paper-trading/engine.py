@@ -17,13 +17,19 @@ import capital as cap
 import corporate_actions as ca
 import pauses as pz
 import support_agent as sa
+import reference_feeds as rf
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
 RULE_HASH={str(k):hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in RULES.items() if str(k).isdigit()}
 for folder in ['logs','out','tests']:(ROOT/folder).mkdir(exist_ok=True)
 if CFG.get('paper_only') is not True:raise SystemExit('PAPER_ONLY_MODE_REQUIRED')
 cap.assert_freeze()
-NS=CFG['namespace']; AUTH_ROUTES={'quotes':'https://api-t1.fyers.in/data/quotes','history':'https://api-t1.fyers.in/data/history','depth':'https://api-t1.fyers.in/data/depth'}
+NS=CFG['namespace']; MD=CFG['market_data']; AUTH_ROUTES=dict(MD['routes'])
+REGULAR_SESSION=tuple(dt_time.fromisoformat(x) for x in CFG['regular_session']); COMPLETED_CUTOFF=dt_time.fromisoformat(CFG['completed_bar_cutoff'])
+# Strategy 07 trail: the fraction is config, but it must equal the frozen rule text (".9*H" for 0.9), so a config edit cannot silently change the frozen formula.
+TRAIL=float(CFG['strategy_07_trail_fraction'])
+if not 0<TRAIL<1 or (('%g'%TRAIL).lstrip('0')+'*H') not in RULES['7']['trailing_update']:raise SystemExit('STRATEGY_07_TRAIL_CONFIG_DISAGREES_WITH_FROZEN_RULE')
+def trail_level(high_water):return round(TRAIL*high_water,2)
 def now():return datetime.now(IST)
 def js(v):return json.dumps(v,default=str,allow_nan=False)
 def log(kind,**data):
@@ -50,7 +56,7 @@ def session(d):
  if not CFG['calendar_valid_from']<=key<=CFG['calendar_valid_through']:return None
  if key in CFG['special_sessions']:return tuple(dt_time.fromisoformat(t) for t in CFG['special_sessions'][key])
  if d.weekday()>=5 or key in CFG['holidays']:return ()
- return (dt_time(9,15),dt_time(15,30))
+ return REGULAR_SESSION
 def is_open(t):
  s=session(t.date());return bool(s and s[0]<=t.timetz().replace(tzinfo=None)<s[1])
 def next_session(d):
@@ -63,7 +69,7 @@ def completed_day(t):
  for k in range(370):
   d=t.date()-timedelta(days=k);s=session(d)
   if s is None:raise RuntimeError('calendar_unverified_completed_session')
-  if s and (d<t.date() or t.timetz().replace(tzinfo=None)>=dt_time(16,0)):return d
+  if s and (d<t.date() or t.timetz().replace(tzinfo=None)>=COMPLETED_CUTOFF):return d
  raise RuntimeError('no_completed_session')
 def load_env():
  sys.path.insert(0,str(LEGACY));from fyers_auth import load_env as f
@@ -98,7 +104,7 @@ class MarketData:
   circuit=ROOT/'auth_circuit.json'
   if circuit.exists():
    c=json.loads(circuit.read_text())
-   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<1800:raise RuntimeError('auth_circuit_open_30min')
+   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<MD['auth_circuit_open_seconds']:raise RuntimeError('auth_circuit_open_30min')
   self.refreshed=True
   src=(LEGACY/'fyers_auth.py').read_text().replace('for url, payload in otp_urls:','for url, payload in otp_urls[:1]:').replace('for label, ident in (("b64", pin_b64), ("sha256", pin_sha), ("raw", pin)):', 'for label, ident in (("b64", pin_b64),):')
   ns={'__file__':str(LEGACY/'fyers_auth.py'),'__name__':'paper_authorized_refresh'};exec(compile(src,str(LEGACY/'fyers_auth.py'),'exec'),ns)
@@ -113,18 +119,19 @@ class MarketData:
   circuit=ROOT/'auth_circuit.json'
   if circuit.exists():
    c=json.loads(circuit.read_text())
-   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<1800:raise RuntimeError('auth_circuit_open_30min')
+   if c.get('open') and (now()-datetime.fromisoformat(c['at'])).total_seconds()<MD['auth_circuit_open_seconds']:raise RuntimeError('auth_circuit_open_30min')
   assert route in AUTH_ROUTES
-  for attempt in range(3):
-   wait=1.3-(time.monotonic()-self.last)
+  attempts=int(MD['max_attempts'])
+  for attempt in range(attempts):
+   wait=MD['min_request_interval_seconds']-(time.monotonic()-self.last)
    if wait>0:time.sleep(wait)
    self.last=time.monotonic()
-   try:r=requests.get(AUTH_ROUTES[route],params=params,headers={'Authorization':self.env['FYERS_APP_ID']+':'+self.env['FYERS_ACCESS_TOKEN']},timeout=30);d=r.json()
+   try:r=requests.get(AUTH_ROUTES[route],params=params,headers={'Authorization':self.env['FYERS_APP_ID']+':'+self.env['FYERS_ACCESS_TOKEN']},timeout=MD['request_timeout_seconds']);d=r.json()
    except Exception:raise RuntimeError('market_data_transport_failed') from None
    if r.status_code in (401,403) or d.get('code') in (-8,-15,-16,-17):
     self.refresh();continue
    if r.status_code==429 or d.get('code')==-360:
-    if attempt<2:time.sleep(65);continue
+    if attempt<attempts-1:time.sleep(MD['rate_limit_backoff_seconds']);continue
     raise RuntimeError('market_data_rate_limit')
    if d.get('s')!='ok':raise RuntimeError('market_data_error_'+str(d.get('code')))
    return d
@@ -201,10 +208,10 @@ def market_guard(q,band=None):
  unknown=state=='NONE' and not fo and not has_band and all(v is not None for v in prices) and len(set(prices))==1
  return {'circuit':state,'series':series if series in ('EQ','BE','BZ') else 'EQ','surveillance':surveillance,'lock_unknown':unknown}
 def circuit_haircut(locked_price,locked_days):
- """Additional 1 percent of the locked price for each locked session after the first."""
- extra=max(0,int(locked_days)-1)
- if extra>=100:return None
- reduced=cap.price_paise(locked_price)*(100-extra)//100
+ """Additional capital_policy circuit_lock_haircut_pct_per_extra_day of the locked price for each locked session after the first."""
+ pct=cap.POLICY['circuit_lock_haircut_pct_per_extra_day'];cut=max(0,int(locked_days)-1)*pct
+ if cut>=100:return None
+ reduced=int(cap.price_paise(locked_price)*(100-cut)//100)
  if reduced<=0:return None
  return reduced/100
 def band_for(db,symbol,day):
@@ -235,8 +242,14 @@ def _fill(db,s,q,t):
   decide(db,s,t,'SKIP',why,'quote_not_fillable',{'price':q.get('price') if q else None},path);return {'filled':False,'reason':why,'execution_path':path}
  if s['eligible_date']>t.date().isoformat():
   decide(db,s,t,'HOLD','not_yet_eligible','entry_waits_for_eligible_session',{},path);return {'filled':False,'reason':'not_yet_eligible','execution_path':path}
- quantity=1
- if s['side']=='BUY' and not s.get('stop'):
+ if s['side']=='SELL':
+  # Exits sell the whole open position; db.mjs sells the stored quantity. Never a fixed 1-share default.
+  held=db.query('SELECT qty FROM paper_positions WHERE namespace=? AND strategy=? AND symbol=? AND qty>0',(NS,s['strategy'],s['symbol']))
+  quantity=int(held[0]['qty']) if held else 0
+ elif s.get('stop'):
+  decide(db,s,t,'SKIP','invalid_stop_side','stops_are_sell_only',{},path);return {'filled':False,'reason':'invalid_stop_side','execution_path':path}
+ else:quantity=None
+ if s['side']=='BUY':
   # A delayed pending entry must not turn into an arbitrarily old new entry.
   eligible=date.fromisoformat(s['eligible_date'])
   if eligible<t.date():
@@ -246,7 +259,7 @@ def _fill(db,s,q,t):
    decide(db,s,t,'SKIP','nonpositive_price','price_requires_positive_paise',{'price':reference},path);return {'filled':False,'reason':'nonpositive_price','quantity':0,'execution_path':path}
   if quantity<1:
    log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=reference,target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
-   decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':reference,quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']},path)
+   decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':reference,'quantity':0,'target_notional_inr':cap.POLICY['target_notional_inr']},path)
    return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':path}
  r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':reference,'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':path,'strategy_version':RULE_HASH.get(str(s['strategy'])),'circuit':guard['circuit'],'series':guard['series'],'surveillance':guard['surveillance'],'lock_unknown':guard['lock_unknown']});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
  if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH','ADV_FILTER_SKIP','ADV_PARTICIPATION_CAP','CIRCUIT_LOCKED','SERIES_TRANSITION_BE_BZ','ASM_GSM_RESTRICTION','KILL_PAUSE'):
@@ -266,7 +279,8 @@ def fill(db,s,q,t):
   al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))),quantity=r.get('quantity'),**extra)
   return r
 
-MUHURAT_INDICATOR_EXCLUDED={'2026-11-08'}
+# Explicit calendar exclusions (freeze plan A9) come from config.json, never a date literal in code.
+MUHURAT_INDICATOR_EXCLUDED=frozenset(CFG['indicator_excluded_sessions'])
 def indicator(strategy,g):
  if isinstance(g,pd.DataFrame) and 'trade_date' in g.columns:
   m=g.trade_date.astype(str).isin(MUHURAT_INDICATOR_EXCLUDED)
@@ -293,7 +307,7 @@ def sync(db,api,target,symbols):
  for sym in symbols:
   if cv.get(sym,'')>=str(target):continue
   if not cv.get(sym):invalid.append({'symbol':sym,'reason':'no_existing_history_unverified_identity'});continue
-  start=max(date.fromisoformat(cv[sym])+timedelta(days=1),target-timedelta(days=364))
+  start=max(date.fromisoformat(cv[sym])+timedelta(days=1),target-timedelta(days=CFG['history_sync_lookback_days']))
   try:candles=api.history(sym,start,target)
   except RuntimeError as e:
    if str(e).startswith('market_data_error_') and '300' in str(e):invalid.append({'symbol':sym,'reason':'invalid_symbol'});continue
@@ -328,6 +342,11 @@ def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  except RuntimeError:benchmark=pd.DataFrame();benchmark_error="benchmark_sync_unavailable"
  repair_report=hr.repair(sys.modules[__name__],db,api,target) if do_sync and len(benchmark)>0 else None
  if do_sync:al.emit(sys.modules[__name__],db,'sync_completed',target_completed_bar=str(target),symbols_count=len(syms))
+ reference_report=None
+ if do_sync and not snapshot_only:
+  # Plan A6/A7 inputs (corporate actions, ASM/GSM, BE/BZ). Fail-soft: a feed outage is reported, never invented.
+  try:reference_report=rf.refresh(sys.modules[__name__],db,t.date() if session(t.date()) else next_session(t.date()))
+  except Exception as ex:reference_report={'status':'failed','error':au.safe_error(ex)}
  raw=read_history(db,syms,target);assert len(raw)>0
  raw,input_details,input_audit=si.filter_history(raw,benchmark)
  gates={}
@@ -335,7 +354,7 @@ def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
   gates[sym]=pf.evaluate(g,benchmark,target);gates[sym]['earliest_stored_history']=str(g.trade_date.min());gates[sym]['input_policy']=input_details[sym]
   if input_details[sym]['unverified_recent_dates']:gates[sym].update(status='UNAVAILABLE',reasons=['unverified_stock_session_dates'])
  if isinstance(benchmark,pd.DataFrame) and len(benchmark)>0:
-  coverage=db.query("SELECT symbol,SUM(outcome='NO_PROVIDER_BAR') absent,SUM(outcome='PROVIDER_REJECTED_RANGE') rejected FROM paper_history_gap_checks WHERE namespace=? AND trade_date>=? AND trade_date<=? GROUP BY symbol",(NS,str(benchmark.iloc[-min(253,len(benchmark))].trade_date),str(target)))
+  coverage=db.query("SELECT symbol,SUM(outcome='NO_PROVIDER_BAR') absent,SUM(outcome='PROVIDER_REJECTED_RANGE') rejected FROM paper_history_gap_checks WHERE namespace=? AND trade_date>=? AND trade_date<=? GROUP BY symbol",(NS,str(benchmark.iloc[-min(pf.POLICY['beta_intervals']+1,len(benchmark))].trade_date),str(target)))
   for evidence in coverage:
    if evidence['symbol'] in gates:gates[evidence['symbol']].update(provider_absent_sessions=evidence['absent'],provider_rejected_sessions=evidence['rejected'])
  for sym in syms:
@@ -345,7 +364,8 @@ def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  valid=(raw[['open','high','low','close']]>0).all(axis=1)&np.isfinite(raw[['open','high','low','close']]).all(axis=1)&(raw.high>=raw[['open','close','low']].max(axis=1))&(raw.low<=raw[['open','close','high']].min(axis=1))
  stm=[('INSERT INTO paper_prefilter_states(namespace,bar_date,symbol,policy_version,status,metrics_json,observed_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(namespace,bar_date,symbol,policy_version) DO UPDATE SET status=excluded.status,metrics_json=excluded.metrics_json,observed_at=excluded.observed_at',(NS,str(target),sym,pf.POLICY['version'],r['status'],js(r),t.isoformat())) for sym,r in gates.items()]
  stm +=[('INSERT OR IGNORE INTO paper_data_audit(namespace,symbol,bar_date,reason,observed_at) VALUES(?,?,?,?,?)',(NS,x.symbol,x.trade_date,'nonpositive_nonfinite_or_inconsistent_OHLC',t.isoformat())) for x in raw[~valid].itertuples(index=False)]
- for row in json.loads((ROOT/'prefilter_exclusions.json').read_text()):
+ exclusions=json.loads((ROOT/'prefilter_exclusions.json').read_text())
+ for row in exclusions:
   r={'status':'UNAVAILABLE','reasons':[row['reason']],'audit_excluded':True,'policy_version':pf.POLICY['version']}
   audit_events.append(al.event(sys.modules[__name__],'prefilter_decision',outcome='UNAVAILABLE',symbol=row['symbol'],bar_date=str(target),reasons=r['reasons']))
   audit_events.append(al.event(sys.modules[__name__],'strategy_decisions',outcome='not_evaluated',symbol=row['symbol'],bar_date=str(target),decisions=[{'strategy':i,'outcome':'not_evaluated','reason':'original_audit_exclusion'} for i in range(1,8)]))
@@ -400,7 +420,7 @@ def _scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  for sym in sorted(set(skipped)):audit_events.append(al.event(sys.modules[__name__],'strategy_decisions',outcome='not_evaluated',symbol=sym,bar_date=str(target),decisions=[{'strategy':i,'outcome':'not_evaluated','reason':'stale_stock_or_benchmark'} for i in range(1,8)]))
  stm+=al.statements(audit_events)
  if not NS.startswith('test_'):pd.DataFrame(qual).to_csv(ROOT/'out/latest_qualifiers.csv',index=False)
- report={'input_validation':input_audit,'target_completed_bar':str(target),'bootstrap':bootstrap,'funnel':funnel,'universe_symbols':len(syms),'frozen_universe_symbols':len(universe()),'excluded_audit_symbols':59,'original_audit_universe':751,'signals_queued':created,'latest_qualifiers':len(qual),'unavailable_current_symbols':skipped,'invalid_rows_excluded':int((~valid).sum()),'sync':sync_report,'no_backlog_fills':True,'screen_only':snapshot_only,'prefilter_policy':pf.POLICY,'prefilter_counts':{k:sum(r['status']==k for r in gates.values()) for k in ['PASS','FAIL','UNAVAILABLE']},'benchmark_sync_error':benchmark_error,'history_repair':repair_report,'data_refresh_status':repair_report.get('status') if repair_report else 'not_requested'};stm.append(('INSERT INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace,bar_date) DO UPDATE SET scanned_at=excluded.scanned_at,status=excluded.status,report_json=excluded.report_json',(NS,str(target),t.isoformat(),'partial' if skipped else 'ok',js(report))));db.batch(stm);db.run('scan','partial' if skipped else 'ok',**report);return report
+ report={'input_validation':input_audit,'target_completed_bar':str(target),'bootstrap':bootstrap,'funnel':funnel,'universe_symbols':len(syms),'frozen_universe_symbols':len(universe()),'excluded_audit_symbols':len(exclusions),'original_audit_universe':len(universe())+len(exclusions),'signals_queued':created,'latest_qualifiers':len(qual),'unavailable_current_symbols':skipped,'invalid_rows_excluded':int((~valid).sum()),'sync':sync_report,'no_backlog_fills':True,'screen_only':snapshot_only,'prefilter_policy':pf.POLICY,'prefilter_counts':{k:sum(r['status']==k for r in gates.values()) for k in ['PASS','FAIL','UNAVAILABLE']},'benchmark_sync_error':benchmark_error,'history_repair':repair_report,'reference_feeds':reference_report,'data_refresh_status':repair_report.get('status') if repair_report else 'not_requested'};stm.append(('INSERT INTO paper_scan_batches(namespace,bar_date,scanned_at,status,report_json) VALUES(?,?,?,?,?) ON CONFLICT(namespace,bar_date) DO UPDATE SET scanned_at=excluded.scanned_at,status=excluded.status,report_json=excluded.report_json',(NS,str(target),t.isoformat(),'partial' if skipped else 'ok',js(report))));db.batch(stm);db.run('scan','partial' if skipped else 'ok',**report);return report
 
 def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
  e=sys.modules[__name__];start=time.monotonic()
@@ -441,7 +461,7 @@ def _monitor(db,api):
  for p in positions:
   q=quotes.get(p['symbol']);ok,why=valid_quote(q,t)
   official=positive_price(q.get('open')) if q else None;low=positive_price(q.get('low')) if q else None
-  level=round(.9*p['high_water'],2) if p['strategy']==7 else None
+  level=trail_level(p['high_water']) if p['strategy']==7 else None
   stop_rule='trail_gap' if (ok and level is not None and official is not None and official<=level) else ('trail_touch' if (ok and level is not None and low is not None and low<=level) else None)
   triggered=stop_rule is not None;carried=bool(p.get('pending_exit'))
   position_rows.append({'strategy':p['strategy'],'symbol':p['symbol'],'quantity':p['qty'],'price':q.get('price') if q else None,'accepted':ok,'reason':why,'stop_defined':p['strategy']==7,'target_defined':False,'threshold':level,'high_water':p['high_water'],'trigger':triggered})
@@ -514,7 +534,7 @@ def migrate(db):
   db.batch([('ALTER TABLE paper_positions ADD COLUMN pending_exit INTEGER NOT NULL DEFAULT 0',()),('ALTER TABLE paper_positions ADD COLUMN pending_exit_since TEXT',())])
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
- parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','funnel','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs','support']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
+ parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','funnel','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs','support','reference-feeds']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
  if not 1<=args.max_history_requests<=1100 or not 1<=args.max_history_seconds<=1080:parser.error('historical repair budget outside safe bounds')
  if args.command in ['worker','ensure-monitor','health','ensure-session','guardian','replay-audit','export-logs','support']:
   # Supervision must remain reachable even while a worker/scan holds engine.lock.
@@ -562,6 +582,7 @@ def main():
     elif args.command=='funnel':out=au.funnel(sys.modules[__name__],db)
     elif args.command=='eod':out=au.eod(sys.modules[__name__],db)
     elif args.command=='weekly':out=au.weekly(sys.modules[__name__],db)
+    elif args.command=='reference-feeds':d=now().date();out=rf.refresh(sys.modules[__name__],db,d if session(d) else next_session(d))
     log('command_completed',command=args.command,namespace=NS)
     print(js(out))
   except Exception as e:
