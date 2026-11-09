@@ -178,11 +178,18 @@ class PaperTests(unittest.TestCase):
   with ThreadPoolExecutor(max_workers=2) as pool:r=list(pool.map(f,[1,2]))
   self.assertEqual(sum(r),1);self.assertEqual(len(self.db.query('SELECT * FROM paper_fills WHERE namespace=?',(e.NS,))),1)
  def test_stop_fills_observed_quote_not_threshold(self):
-  e.fill(self.db,self.signal(strategy=7),self.quote(),T)
-  class Feed:
+  bought=e.fill(self.db,self.signal(strategy=7),self.quote(),T);self.assertTrue(bought['filled'])
+  self.assertEqual(e.RULES['7']['evidence_clock'],'2026-11-09');self.assertIn('version',e.RULES['7'])
+  class PolledOnly:
    def quotes(_,symbols):return {'RELIANCE-EQ':self.quote(85)}
-  r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertLess(fills[-1]['price'],85);self.assertNotEqual(fills[-1]['price'],90)
-  exit_decision=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]['payload_json']);self.assertEqual(exit_decision['reference_price'],85);self.assertEqual(exit_decision['slippage_rule'],'tiered_adv_slippage')
+  self.assertEqual(e.monitor(self.db,PolledOnly())['fills'],0);self.assertEqual(len(self.db.positions()),1)
+  threshold=round(.9*bought['price'],2)
+  class TouchFeed:
+   def quotes(_,symbols):return {'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':85,'open':95,'low':85,'quote_at':T.isoformat()}}
+  r=e.monitor(self.db,TouchFeed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertLess(fills[-1]['price'],threshold);self.assertGreater(fills[-1]['price'],85)
+  row=self.db.query("SELECT rule,execution_path,payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]
+  self.assertEqual(row['rule'],'trail_touch');self.assertEqual(row['execution_path'],'LTP_LEGACY')
+  exit_decision=json.loads(row['payload_json']);self.assertEqual(exit_decision['reference_price'],threshold);self.assertEqual(exit_decision['slippage_rule'],'tiered_adv_slippage')
  def test_open_path_sizes_on_the_official_open(self):
   mapped=e.quote_from_fyers({'n':'NSE:RELIANCE-EQ','s':'ok','v':{'lp':100,'open_price':90,'indicative_price':80,'reference_price':79,'tt':'2026-11-09T10:00:00+05:30'}})
   self.assertEqual(mapped['open'],90);self.assertEqual(mapped['price'],100);self.assertNotIn('auction_price',mapped)
@@ -244,8 +251,26 @@ class PaperTests(unittest.TestCase):
   class Feed:
    def quotes(_,symbols):return {'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':88,'open':80,'quote_at':T.isoformat()}}
   self.assertEqual(e.monitor(self.db,Feed())['fills'],1)
-  exit_row=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]['payload_json'])
+  row=self.db.query("SELECT rule,payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]
+  self.assertEqual(row['rule'],'trail_gap')
+  exit_row=json.loads(row['payload_json'])
   self.assertEqual(exit_row['reference_price'],80);self.assertEqual(self.db.query("SELECT execution_path FROM paper_fills WHERE namespace=? AND side='SELL'",(e.NS,))[0]['execution_path'],'FEED_OPEN');self.assertLess(exit_row['price'],80)
+ def test_strategy_07_chronology_sma_open_before_trail_touch(self):
+  self.assertTrue(e.fill(self.db,self.signal(symbol='RELIANCE-EQ',strategy=7),self.quote(),T)['filled'])
+  sma=self.signal('SELL',symbol='RELIANCE-EQ',strategy=7)
+  self.assertTrue(e.fill(self.db,self.signal(symbol='TCS-EQ',strategy=7),self.quote(),T)['filled'])
+  self.signal('SELL',symbol='TCS-EQ',strategy=7)
+  class Feed:
+   def quotes(_,symbols):return {
+    'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':88,'open':95,'low':85,'quote_at':T.isoformat()},
+    'TCS-EQ':{'symbol':'TCS-EQ','price':82,'open':80,'low':78,'quote_at':T.isoformat()}}
+  self.assertEqual(e.monitor(self.db,Feed())['fills'],2)
+  rel_fill=self.db.query("SELECT signal_id,execution_path FROM paper_fills WHERE namespace=? AND symbol='RELIANCE-EQ' AND side='SELL'",(e.NS,))[0]
+  self.assertEqual(rel_fill['signal_id'],sma['id']);self.assertEqual(rel_fill['execution_path'],'FEED_OPEN')
+  rel_exit=self.db.query("SELECT correlation_id,rule,execution_path,payload_json FROM paper_decisions WHERE namespace=? AND symbol='RELIANCE-EQ' AND decision_type='EXIT'",(e.NS,))[0]
+  self.assertEqual(rel_exit['correlation_id'],sma['id']);self.assertEqual(rel_exit['rule'],'feed_official_open');self.assertEqual(rel_exit['execution_path'],'FEED_OPEN');self.assertEqual(json.loads(rel_exit['payload_json'])['reference_price'],95)
+  tcs_exit=self.db.query("SELECT rule,execution_path,payload_json FROM paper_decisions WHERE namespace=? AND symbol='TCS-EQ' AND decision_type='EXIT'",(e.NS,))[0]
+  self.assertEqual(tcs_exit['rule'],'trail_gap');self.assertEqual(tcs_exit['execution_path'],'FEED_OPEN');self.assertEqual(json.loads(tcs_exit['payload_json'])['reference_price'],80)
  def test_closed_monitor_no_quotes(self):
   e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST)
   class Feed:

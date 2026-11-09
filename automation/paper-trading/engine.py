@@ -140,11 +140,12 @@ def quote_from_fyers(x,stamp=None):
  if official is None and indicative is not None and cas is not None:row['auction_price']=indicative
  return row
 def execution_reference(q,stop=False,stop_level=None,pending_exit=False):
- """Next-open orders use the official open. A fresh polled stop keeps the last trade unless the open has gapped through the stop. Group H still owns the stop clock."""
+ """Next-open orders use the official open. Strategy 07 stops fill at the open on a gap through the prior stop (trail_gap) or at the stop level when the bar low touches it (trail_touch)."""
  if not q:return None,'LTP_LEGACY'
  if stop and not pending_exit:
-  official=positive_price(q.get('open'));level=positive_price(stop_level)
+  official=positive_price(q.get('open'));low=positive_price(q.get('low'));level=positive_price(stop_level)
   if official is not None and level is not None and official<=level:return official,'FEED_OPEN'
+  if low is not None and level is not None and low<=level:return round(level,2),'LTP_LEGACY'
   return positive_price(q.get('price')),'LTP_LEGACY'
  official=positive_price(q.get('open'))
  if official is not None:return official,'FEED_OPEN'
@@ -373,7 +374,9 @@ def scan(db,api,do_sync=False,bootstrap=False,snapshot_only=False):
   return r
 
 def entry_priority(day,s):
- if s.get('side')=='SELL':return (0,0 if s.get('stop') else 1,int(s.get('strategy') or 0),str(s.get('id') or ''))
+ if s.get('side')=='SELL':
+  rank=2 if s.get('rule')=='trail_touch' else (0 if s.get('stop') else 1)
+  return (0,rank,int(s.get('strategy') or 0),str(s.get('id') or ''))
  return (1,cap.slot_rank(day,s.get('symbol') or ''),int(s.get('strategy') or 0),str(s.get('id') or ''))
 def _monitor(db,api):
  t=now()
@@ -394,22 +397,26 @@ def _monitor(db,api):
  ca.apply(sys.modules[__name__],db,t.date().isoformat(),opens)
  pz.evaluate(sys.modules[__name__],db,t.date().isoformat())
  positions=db.positions();fills=0;used=set();by={(p['strategy'],p['symbol']):p for p in positions}
- # Exits run before entries so a close frees a sleeve slot in the same poll. Entries then follow sha256(session, symbol, seed), then strategy 01-07. The 3-strategy ISIN cap is a later task.
+ # Exits run before entries so a close frees a sleeve slot in the same poll. Entries then follow sha256(session, symbol, seed), then strategy 01-07.
  actions=[];position_rows=[]
  for p in positions:
   q=quotes.get(p['symbol']);ok,why=valid_quote(q,t)
-  position_rows.append({'strategy':p['strategy'],'symbol':p['symbol'],'quantity':p['qty'],'price':q.get('price') if q else None,'accepted':ok,'reason':why,'stop_defined':p['strategy']==7,'target_defined':False,'threshold':.9*p['high_water'] if p['strategy']==7 else None,'high_water':p['high_water'],'trigger':bool(ok and p['strategy']==7 and q['price']<=.9*p['high_water'])})
-  level=.9*p['high_water'] if p['strategy']==7 else None;triggered=bool(ok and level is not None and q['price']<=level);carried=bool(p.get('pending_exit'))
-  if ok and triggered and not carried:
-   al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=p['symbol'],price=q['price'],quote_at=q['quote_at'],threshold=level,reason='observed_stop_crossing',target_defined=False)
+  official=positive_price(q.get('open')) if q else None;low=positive_price(q.get('low')) if q else None
+  level=round(.9*p['high_water'],2) if p['strategy']==7 else None
+  stop_rule='trail_gap' if (ok and level is not None and official is not None and official<=level) else ('trail_touch' if (ok and level is not None and low is not None and low<=level) else None)
+  triggered=stop_rule is not None;carried=bool(p.get('pending_exit'))
+  position_rows.append({'strategy':p['strategy'],'symbol':p['symbol'],'quantity':p['qty'],'price':q.get('price') if q else None,'accepted':ok,'reason':why,'stop_defined':p['strategy']==7,'target_defined':False,'threshold':level,'high_water':p['high_water'],'trigger':triggered})
   if ok and (triggered or carried):
-   actions.append({'id':stable_id(p['strategy'],p['symbol'],p['entry_at'],'pending' if carried else 'stop'),'strategy':p['strategy'],'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'pending_exit_carry' if carried else 'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True,'pending_exit':carried,'stop_level':level})
+   actions.append({'id':stable_id(p['strategy'],p['symbol'],p['entry_at'],'pending' if carried else stop_rule),'strategy':p['strategy'],'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'pending_exit_carry' if carried else stop_rule,'rule':None if carried else stop_rule,'expected_entry_at':p['entry_at'],'stop':True,'pending_exit':carried,'stop_level':level})
  for i in range(0,len(position_rows),50):al.emit(sys.modules[__name__],db,'position_checks',rows=position_rows[i:i+50],count=len(position_rows[i:i+50]))
  actions+=signals;day=t.date().isoformat();actions.sort(key=lambda s:entry_priority(day,s))
  for s in actions:
   key=(s['strategy'],s['symbol'])
   if key in used:continue
-  r=fill(db,s,quotes.get(s['symbol']),now())
+  q=quotes.get(s['symbol'])
+  if s.get('stop') and not s.get('pending_exit') and q:
+   al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=s['symbol'],price=q.get('open') if s.get('rule')=='trail_gap' else s.get('stop_level'),quote_at=q.get('quote_at'),threshold=s.get('stop_level'),reason=s.get('rule') or 'observed_stop_crossing',target_defined=False)
+  r=fill(db,s,q,now())
   if r['filled']:fills+=1;used.add(key)
  # Entry-day stop cannot be hit by the exact same entry LTP; it is checked on subsequent fresh polls.
  st=[];t=now()

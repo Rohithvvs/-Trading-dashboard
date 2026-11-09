@@ -115,11 +115,11 @@ class AtomicAuditTests(unittest.TestCase):
   with patch.object(e,'now',return_value=fixtures.T):self.assertEqual(e.monitor(self.db,API())['status'],'idle')
   rows=self.db.query("SELECT event_type FROM paper_events WHERE namespace=?",(e.NS,));self.assertIn('monitor_idle',[r['event_type'] for r in rows]);self.assertNotIn('quote_request',[r['event_type'] for r in rows])
  def test_stop_hit_logs_observed_threshold_not_target_and_fill(self):
-  self.assertTrue(e.fill(self.db,self.signal(strategy=7),self.quote(100),fixtures.T)['filled'])
+  bought=e.fill(self.db,self.signal(strategy=7),self.quote(100),fixtures.T);self.assertTrue(bought['filled'])
   class API:
-   def quotes(self,syms):return {'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':89.,'quote_at':fixtures.T.isoformat(),'source':'FYERS_QUOTES'}}
+   def quotes(self,syms):return {'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':89.,'open':95.,'low':89.,'quote_at':fixtures.T.isoformat(),'source':'FYERS_QUOTES'}}
   with patch.object(e,'now',return_value=fixtures.T):self.assertEqual(e.monitor(self.db,API())['fills'],1)
-  hit=self.db.query("SELECT data_json FROM paper_events WHERE namespace=? AND event_type='risk_hit'",(e.NS,));self.assertEqual(json.loads(hit[0]['data_json'])['threshold'],90);self.assertFalse(json.loads(hit[0]['data_json'])['target_defined'])
+  hit=self.db.query("SELECT data_json FROM paper_events WHERE namespace=? AND event_type='risk_hit'",(e.NS,));self.assertEqual(json.loads(hit[0]['data_json'])['threshold'],round(.9*bought['price'],2));self.assertFalse(json.loads(hit[0]['data_json'])['target_defined'])
  def test_full751_audit_decisions_all7_without_live_transactions(self):
   import pandas as pd
   syms=['FAKE'+str(i).zfill(4)+'-EQ' for i in range(692)];bars=pd.DataFrame([{'symbol':sym,'trade_date':d,'open':100.,'high':102.,'low':99.,'close':101.,'volume':1000.} for sym in syms for d in ['2026-11-05','2026-11-06','2026-11-09']]);benchmark=bars[bars.symbol==syms[0]]

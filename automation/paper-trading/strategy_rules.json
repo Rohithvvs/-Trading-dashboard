@@ -104,6 +104,8 @@
   },
   "7": {
     "strategy": "07 52-Week High Momentum",
+    "version": "strategy_07_completed_bar_stop_2026_11_09_v2",
+    "evidence_clock": "2026-11-09",
     "entry": "close>=0.90*highest(high,252), including current completed bar, AND close>current-inclusive SMA200; full252bar warmup; daily condition, not crossover",
     "informational_5pct": "close>=0.95*high252 AND same SMA200; subgroup only, not baseline filter",
     "entry_execution": "flat completed-close signal -> next available symbol session open; one long per symbol",

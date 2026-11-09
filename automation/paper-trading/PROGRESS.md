@@ -24,7 +24,7 @@ The engine is not installed on the bot box.
 - [x] Exits first, then `sha256(session|symbol|freeze_capital_v1)`, then strategy 01–07
 - [x] ISIN cap 3, `ISIN_CAP`
 - [x] Sleeve cash, `INSUFFICIENT_CASH`
-- [x] Shadow ledger does not consume the ISIN cap. ISIN-blocked buys are recorded there. Shadow-only exits are still open.
+- [x] Shadow ledger does not consume the ISIN cap. ISIN-blocked buys are recorded there. Shadow-only exits close open shadow positions without consuming the cap.
 - [x] Pro-rata DP. One ₹14.75 charge per ISIN per sell day, turnover-weighted. Remainder paise go to the latest sell.
 
 ## Task Group C — ADV, participation, slippage
@@ -53,7 +53,7 @@ The engine is not installed on the bot box.
 
 ## Task Group H — Strategy 07
 
-- [ ] Completed-bar stop only, formula unchanged, version and evidence clock reset
+- [x] Completed-bar stop only (`trail_gap` at open before queued SMA50 open exits, then `trail_touch` at stop when low <= stop; polled LTP alone does not exit), `0.90 * H` formula unchanged, Strategy 07 version and evidence clock reset (`2026-11-09`)
 
 ## Task Group I — reporting and sessions
 
