@@ -16,6 +16,7 @@ import history_repair as hr
 import capital as cap
 import corporate_actions as ca
 import pauses as pz
+import support_agent as sa
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
 RULE_HASH={str(k):hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in RULES.items() if str(k).isdigit()}
@@ -490,9 +491,9 @@ def migrate(db):
   db.batch([('ALTER TABLE paper_positions ADD COLUMN pending_exit INTEGER NOT NULL DEFAULT 0',()),('ALTER TABLE paper_positions ADD COLUMN pending_exit_since TEXT',())])
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
- parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','funnel','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
+ parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','funnel','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs','support']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
  if not 1<=args.max_history_requests<=1100 or not 1<=args.max_history_seconds<=1080:parser.error('historical repair budget outside safe bounds')
- if args.command in ['worker','ensure-monitor','health','ensure-session','guardian','replay-audit','export-logs']:
+ if args.command in ['worker','ensure-monitor','health','ensure-session','guardian','replay-audit','export-logs','support']:
   # Supervision must remain reachable even while a worker/scan holds engine.lock.
   try:
    db=DB();e=sys.modules[__name__]
@@ -502,6 +503,8 @@ def main():
    elif args.command=='replay-audit':
     if not 1<=args.max_files<=1000:raise ValueError('replay_arguments')
     print(js(al.replay(e,db,args.max_files)))
+   elif args.command=='support':
+    print(js(sa.run_cli(e,db,args.session)))
    else:
     fn={'worker':au.worker,'ensure-monitor':au.ensure_monitor,'health':au.health,'ensure-session':gd.ensure,'guardian':gd.run}[args.command]
     with al.scope(e,db,args.command):print(js(fn(e,db)))

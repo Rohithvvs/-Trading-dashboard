@@ -137,6 +137,26 @@ class SupportAgentTests(unittest.TestCase):
             self.assertTrue(rep['decision_chain_intact'])
             self.assertTrue(Path(rep['report_path']).exists())
 
+    def test_a5_schedule_runs_without_engine_lock_or_trading_mutation(self):
+        from datetime import datetime, time as dt_time
+        import tempfile
+        day = '2026-11-09'
+        bounds = (dt_time(9, 15), dt_time(15, 30))
+        w_intra = sa.schedule_window(datetime(2026, 11, 9, 10, 0), bounds)
+        self.assertTrue(w_intra['due'])
+        self.assertEqual(w_intra['phase'], 'intraday')
+        self.assertFalse(w_intra['schedule']['locks_engine'])
+        w_eod = sa.schedule_window(datetime(2026, 11, 9, 15, 35), bounds)
+        self.assertTrue(w_eod['due'])
+        self.assertEqual(w_eod['phase'], 'post_eod')
+        w_closed = sa.schedule_window(datetime(2026, 11, 9, 20, 0), None)
+        self.assertFalse(w_closed['due'])
+        with tempfile.TemporaryDirectory() as tmp:
+            out = sa.run_scheduled_pass(self.db, 'test_ns', day, session_bounds=bounds, now_at=datetime(2026, 11, 9, 15, 35), out_dir=tmp)
+            self.assertEqual(out['status'], 'ok')
+            self.assertEqual(out['window']['phase'], 'post_eod')
+            self.assertTrue(Path(out['report']['report_path']).exists())
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

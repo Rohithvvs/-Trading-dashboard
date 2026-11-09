@@ -71,6 +71,6 @@ The engine is not installed on the bot box.
 - [x] A2 consumer (keyset checkpoint consumer over `paper_events` and `paper_decisions` grouped by `correlation_id`)
 - [x] A3 detectors (`coverage_gap`, `incomplete_lifecycle` with timeout `None`, `unexpected_skip`, `placeholder_text`, `reconstruction_failure`, `monitor_staleness`, `named_cause_dump`)
 - [x] A4 reporter (`support_agent.session_report` with detector/status/severity breakdown and `named_causes` summary)
-- [ ] A5 schedule
+- [x] A5 schedule (`support_agent.schedule_window`, `run_scheduled_pass`, and non-locking `engine.py support` supervision subcommand)
 - [ ] A6 observation mode
 - [ ] B tests

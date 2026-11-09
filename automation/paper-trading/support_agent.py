@@ -472,4 +472,63 @@ def session_report(db, namespace, session_day, out_dir=None):
     return report
 
 
+SCHEDULE_SPEC = {
+    'intraday_interval_seconds': 300,
+    'post_close_offset_minutes': 5,
+    'locks_engine': False,
+    'mutates_trading_state': False,
+}
+
+
+def schedule_window(t, session_bounds):
+    """Determine whether a scheduled support pass is due and which phase applies."""
+    if not session_bounds:
+        return {'due': False, 'phase': 'closed', 'schedule': SCHEDULE_SPEC}
+    start_t, end_t = session_bounds
+    wall = t.time().replace(tzinfo=None)
+    post_end = (datetime.combine(t.date(), end_t).timestamp() + 3600)
+    now_ts = datetime.combine(t.date(), wall).timestamp()
+    start_ts = datetime.combine(t.date(), start_t).timestamp() - 300
+    end_ts = datetime.combine(t.date(), end_t).timestamp()
+    if start_ts <= now_ts <= end_ts:
+        return {'due': True, 'phase': 'intraday', 'schedule': SCHEDULE_SPEC}
+    if end_ts < now_ts <= post_end:
+        return {'due': True, 'phase': 'post_eod', 'schedule': SCHEDULE_SPEC}
+    return {'due': False, 'phase': 'off_hours', 'schedule': SCHEDULE_SPEC}
+
+
+def run_scheduled_pass(db, namespace, session_day, session_bounds=None, now_at=None, observation_only=True, out_dir=None):
+    """Execute one non-blocking support pass (checkpoint -> detectors -> report) without engine.lock."""
+    session_day = str(session_day)
+    window = schedule_window(now_at, session_bounds) if now_at is not None else {'due': True, 'phase': 'manual', 'schedule': SCHEDULE_SPEC}
+    cp_res = consume_checkpoint(db, namespace)
+    det_res = run_detectors(db, namespace, session_day=session_day, observation_only=observation_only)
+    rep = session_report(db, namespace, session_day=session_day, out_dir=out_dir)
+    return {
+        'status': 'ok',
+        'namespace': namespace,
+        'session_day': session_day,
+        'window': window,
+        'observation_only': bool(observation_only),
+        'checkpoint': cp_res,
+        'detectors': det_res,
+        'report': rep,
+    }
+
+
+def run_cli(e, db, session_day=None):
+    """CLI entrypoint invoked from engine.py supervision branch without taking engine.lock."""
+    t = e.now()
+    day = str(session_day or t.date())
+    obs = bool(e.CFG.get('support_observation_only', True))
+    return run_scheduled_pass(
+        db, e.NS, day,
+        session_bounds=e.session(t.date()),
+        now_at=t,
+        observation_only=obs,
+        out_dir=e.ROOT / 'out',
+    )
+
+
+
 
