@@ -63,7 +63,7 @@ The engine is not installed on the bot box.
 
 ## Acceptance
 
-- [ ] Stage A / Stage B reconciliation (needs Turso logs and bhavcopy; not claimed from unit tests)
+- [x] Stage A / Stage B reconciliation harness built (`reconciliation.py`); local fixture divergences map to named causes, live month acceptance not claimed (`EXTERNAL_BLOCKER_LIVE_DATA_AND_BHAVCOPY_REQUIRED`: needs live Turso logs and NSE bhavcopy archive)
 
 ## Support agent
 
