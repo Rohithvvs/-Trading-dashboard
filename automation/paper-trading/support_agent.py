@@ -1,18 +1,29 @@
-"""Read-only Support Agent for paper trading.
+"""Read-only Support Agent for paper trading (Production Plan v3).
 
 The Support Agent is strictly read-only on trading state (paper_signals, paper_positions,
-paper_fills, paper_fill_costs, paper_decisions, etc.) and only writes to support_findings
-and support_checkpoints.
-Findings are append-only; status transitions (OPEN, ACKNOWLEDGED, RESOLVED, WONT_FIX)
-insert new rows with incrementing status_seq and never update or delete prior rows.
+paper_fills, paper_fill_costs, paper_decisions, etc.) and only writes to support tables
+(or out/support/support.sqlite).
+Findings are append-only and SHA-256 hash-chained; status transitions (OPEN, ACKNOWLEDGED,
+RESOLVED, WONT_FIX, VERIFIED) insert new rows with incrementing status_seq and actor attribution,
+and never update or delete prior rows.
 """
-import hashlib, json, re
-from datetime import datetime, timezone
+import csv, hashlib, json, math, re, sqlite3
+from datetime import date, datetime, time as dt_time, timedelta, timezone
+from pathlib import Path
 import reconciliation as rec
 
-VALID_STATUSES = ('OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'WONT_FIX')
-VALID_SEVERITIES = ('INFO', 'WARN', 'ERROR', 'CRITICAL')
-INCOMPLETE_LIFECYCLE_MINUTES = None
+ROOT = Path(__file__).resolve().parent
+CFG = json.loads((ROOT / 'config.json').read_text(encoding='utf8'))
+CAP_POLICY = json.loads((ROOT / 'capital_policy.json').read_text(encoding='utf8'))
+POLICY_FILE = ROOT / 'support_policy.json'
+POLICY_LOCK_FILE = ROOT / 'support_policy_lock.json'
+SUPPORT_POLICY = json.loads(POLICY_FILE.read_text(encoding='utf8'))
+
+IST = timezone(timedelta(minutes=int(SUPPORT_POLICY['utc_offset_minutes'])), name=SUPPORT_POLICY['timezone'])
+
+VALID_STATUSES = ('OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'WONT_FIX', 'VERIFIED')
+VALID_SEVERITIES = ('SEV1', 'SEV2', 'SEV3', 'SEV4', 'INFO', 'WARN', 'ERROR', 'CRITICAL')
+INCOMPLETE_LIFECYCLE_MINUTES = SUPPORT_POLICY['thresholds']['incomplete_lifecycle_timeout_minutes']
 
 EXPECTED_SKIP_CAUSES = rec.NAMED_CAUSES | frozenset({
     'not_pending',
@@ -31,7 +42,9 @@ EXPECTED_SKIP_CAUSES = rec.NAMED_CAUSES | frozenset({
     'quote_outside_verified_session',
 })
 
-PLACEHOLDER_PATTERN = re.compile(r'(\bTODO\b|\bFIXME\b|\bTBD\b|\bPLACEHOLDER_TEXT\b|\[redacted\]|\bunclassified_condition\b)', re.IGNORECASE)
+# Note (v3): unclassified_condition is NOT placeholder text; it is classified by error_taxonomy_gap.
+PLACEHOLDER_PATTERN = re.compile(r'(\bTODO\b|\bFIXME\b|\bTBD\b|\bPLACEHOLDER_TEXT\b|\[redacted\])', re.IGNORECASE)
+ERROR_TAXONOMY_PATTERN = re.compile(r'(\bunclassified_condition\b|\bunclassified_error\b|\bunknown_worker_error\b)', re.IGNORECASE)
 GENESIS = '0' * 64
 
 
@@ -42,13 +55,247 @@ def _stable_json(v):
         return '{' + ','.join(json.dumps(k) + ':' + _stable_json(v[k]) for k in sorted(v.keys())) + '}'
     return json.dumps(None if v is None else v)
 
-SCHEMA = """CREATE TABLE IF NOT EXISTS support_findings(namespace TEXT NOT NULL,finding_id TEXT NOT NULL,status_seq INTEGER NOT NULL,detector TEXT NOT NULL,correlation_id TEXT NOT NULL,first_event_at TEXT NOT NULL,session_day TEXT NOT NULL,severity TEXT NOT NULL CHECK(severity IN('INFO','WARN','ERROR','CRITICAL')),status TEXT NOT NULL CHECK(status IN('OPEN','ACKNOWLEDGED','RESOLVED','WONT_FIX')),observation_only INTEGER NOT NULL DEFAULT 1,notified INTEGER NOT NULL DEFAULT 0,details_json TEXT NOT NULL,recorded_at TEXT NOT NULL,PRIMARY KEY(namespace,finding_id,status_seq));
+
+def canonical_policy_json(obj):
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
+
+
+def policy_digest(obj):
+    return hashlib.sha256(canonical_policy_json(obj).encode('utf-8')).hexdigest()
+
+
+def assert_support_policy_lock(policy=None, lock=None):
+    """Verify support_policy.json matches support_policy_lock.json and satisfies the v3 Null rule."""
+    p = SUPPORT_POLICY if policy is None else policy
+    lk = json.loads(POLICY_LOCK_FILE.read_text(encoding='utf8')) if lock is None else lock
+    expected_hash = lk.get('files', {}).get('support_policy.json')
+    if policy_digest(p) != expected_hash:
+        raise ValueError('support_policy_lock_mismatch')
+    if p.get('version') != lk.get('support_policy_version'):
+        raise ValueError('support_policy_version_mismatch')
+    # Null rule (v3): No null SEV1/SEV2 threshold before P2.
+    thresh = p.get('thresholds', {})
+    sevs = p.get('threshold_severities', {})
+    for k, sev in sevs.items():
+        if sev in ('SEV1', 'SEV2') and thresh.get(k) is None:
+            raise ValueError(f'null_sev1_or_sev2_threshold:{k}')
+    # Delivery rule (H5): Grok Bot chat only; no email, Slack, or external webhooks.
+    deliv = p.get('delivery', {})
+    if deliv.get('channel') != 'grok_bot_chat_only' or deliv.get('allow_email') or deliv.get('allow_slack') or deliv.get('allow_external_webhooks'):
+        raise ValueError('external_delivery_channel_forbidden_by_H5')
+    return p
+
+
+def missing_policy_values(policy=None):
+    """Return undecided (null) SEV3/SEV4 threshold keys to emit policy_value_missing at 08:30."""
+    p = SUPPORT_POLICY if policy is None else policy
+    thresh = p.get('thresholds', {})
+    sevs = p.get('threshold_severities', {})
+    missing = []
+    for k in sorted(thresh.keys()):
+        if thresh[k] is None:
+            missing.append({'key': f'thresholds.{k}', 'target_severity': sevs.get(k, 'SEV4')})
+    return missing
+
+
+def derived_counts(root=None):
+    """Compute universe size and strategy cells dynamically from repository files."""
+    base = Path(root) if root is not None else ROOT
+    src = SUPPORT_POLICY['derived_counts_sources']
+    with (base / src['universe_csv']).open('r', encoding='utf8', newline='') as f:
+        reader = csv.DictReader(f)
+        universe_syms = [r['db_symbol'].strip() for r in reader if r.get('db_symbol')]
+    exclusions = json.loads((base / src['exclusions_json']).read_text(encoding='utf8'))
+    rules = json.loads((base / src['strategy_rules_json']).read_text(encoding='utf8'))
+    u_count = len(universe_syms)
+    e_count = len(exclusions)
+    expected_symbols = u_count + e_count
+    strategy_count = len(rules)
+    return {
+        'universe_symbols': u_count,
+        'excluded_symbols': e_count,
+        'expected_symbols': expected_symbols,
+        'strategy_count': strategy_count,
+        'expected_strategy_cells': expected_symbols * strategy_count,
+    }
+
+
+def ist_now():
+    """Return current timezone-aware timestamp in Asia/Kolkata."""
+    return datetime.now(IST)
+
+
+def _utc_now():
+    return ist_now().isoformat()
+
+
+def parse_ist(value):
+    """Parse an ISO timestamp or datetime into Asia/Kolkata timezone-aware datetime."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=IST)
+        return value.astimezone(IST)
+    s = str(value).strip()
+    if s.endswith('Z'):
+        s = s[:-1] + '+00:00'
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=IST)
+    return dt.astimezone(IST)
+
+
+def ist_session_day(value):
+    """Return YYYY-MM-DD session day in Asia/Kolkata."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    s = str(value).strip()
+    if len(s) == 10 and s[4] == '-' and s[7] == '-':
+        return s
+    return parse_ist(s).date().isoformat()
+
+
+def is_trading_day(day_val, cfg=None):
+    """True if day_val is a weekday not in NSE holidays or a special session day."""
+    c = CFG if cfg is None else cfg
+    d = date.fromisoformat(str(day_val)[:10]) if not isinstance(day_val, date) else (day_val.date() if isinstance(day_val, datetime) else day_val)
+    ds = d.isoformat()
+    if ds in c.get('special_sessions', {}):
+        return True
+    if d.weekday() >= 5:
+        return False
+    if ds in set(c.get('holidays', [])):
+        return False
+    return True
+
+
+def next_trading_day(day_val, cfg=None):
+    """Return next NSE trading day strictly after day_val."""
+    d = date.fromisoformat(str(day_val)[:10]) if not isinstance(day_val, date) else (day_val.date() if isinstance(day_val, datetime) else day_val)
+    cur = d + timedelta(days=1)
+    while not is_trading_day(cur, cfg=cfg):
+        cur += timedelta(days=1)
+    return cur
+
+
+SCHEMA = """CREATE TABLE IF NOT EXISTS support_findings(namespace TEXT NOT NULL,finding_id TEXT NOT NULL,status_seq INTEGER NOT NULL,detector TEXT NOT NULL,correlation_id TEXT NOT NULL,first_event_at TEXT NOT NULL,session_day TEXT NOT NULL,severity TEXT NOT NULL CHECK(severity IN('SEV1','SEV2','SEV3','SEV4','INFO','WARN','ERROR','CRITICAL')),status TEXT NOT NULL CHECK(status IN('OPEN','ACKNOWLEDGED','RESOLVED','WONT_FIX','VERIFIED')),observation_only INTEGER NOT NULL DEFAULT 1,notified INTEGER NOT NULL DEFAULT 0,details_json TEXT NOT NULL,recorded_at TEXT NOT NULL,PRIMARY KEY(namespace,finding_id,status_seq));
 CREATE INDEX IF NOT EXISTS support_findings_session_idx ON support_findings(namespace,session_day,finding_id,status_seq);
 CREATE TABLE IF NOT EXISTS support_checkpoints(namespace TEXT PRIMARY KEY,last_recorded_at TEXT NOT NULL,last_event_id TEXT NOT NULL,last_decision_seq INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);"""
 
+LEGACY_SEV_TO_SQL = {
+    'SEV1': 'CRITICAL',
+    'SEV2': 'ERROR',
+    'SEV3': 'WARN',
+    'SEV4': 'INFO',
+}
 
-def init(db):
-    _write_support_only(db, [(s.strip(), ()) for s in SCHEMA.split(';') if s.strip()])
+EXTENDED_SUPPORT_SCHEMA = """CREATE TABLE IF NOT EXISTS support_episodes(namespace TEXT NOT NULL,episode_id TEXT NOT NULL,session_day TEXT NOT NULL,expectation TEXT NOT NULL,detector TEXT NOT NULL,finding_id TEXT NOT NULL,base_severity TEXT NOT NULL,current_severity TEXT NOT NULL,occurrence_count INTEGER NOT NULL DEFAULT 1,cumulative_blind_seconds REAL NOT NULL DEFAULT 0,escalated INTEGER NOT NULL DEFAULT 0,informed_escalation INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL CHECK(status IN('OPEN','CLOSED')),opened_at TEXT NOT NULL,updated_at TEXT NOT NULL,closed_at TEXT,details_json TEXT NOT NULL DEFAULT '{}',PRIMARY KEY(namespace,episode_id));
+CREATE TABLE IF NOT EXISTS support_detector_runs(run_id TEXT PRIMARY KEY,namespace TEXT NOT NULL,session_day TEXT NOT NULL,ran_at TEXT NOT NULL,findings_evaluated INTEGER NOT NULL,findings_created INTEGER NOT NULL,details_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS support_exports(export_id TEXT PRIMARY KEY,namespace TEXT NOT NULL,session_day TEXT NOT NULL,exported_at TEXT NOT NULL,json_path TEXT NOT NULL,markdown_path TEXT,sha256_hash TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS support_heartbeats(heartbeat_id INTEGER PRIMARY KEY AUTOINCREMENT,namespace TEXT NOT NULL,session_day TEXT NOT NULL,heartbeat_at TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'systemd_timer',status TEXT NOT NULL DEFAULT 'ok');
+CREATE TABLE IF NOT EXISTS support_approvals(batch_id TEXT PRIMARY KEY,session_day TEXT NOT NULL,decision TEXT NOT NULL CHECK(decision IN('APPROVE','DECLINE','HOLD')),approved_changes_json TEXT NOT NULL,commit_shas_json TEXT NOT NULL,subset_tree_sha TEXT,actor TEXT NOT NULL,chat_turn_verified INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,voided INTEGER NOT NULL DEFAULT 0,void_reason TEXT);"""
+
+
+ALLOWED_WRITE_TABLES = (
+    'support_findings',
+    'support_checkpoints',
+    'support_episodes',
+    'support_detector_runs',
+    'support_exports',
+    'support_heartbeats',
+    'support_approvals',
+)
+
+
+def _write_support_only(db, statements):
+    """Enforce that the Support Agent never mutates trading tables (H2)."""
+    for sql, _ in statements:
+        norm = ' '.join(str(sql).strip().split()).upper()
+        if not any(
+            norm.startswith(f'INSERT INTO {t.upper()}')
+            or norm.startswith(f'INSERT OR REPLACE INTO {t.upper()}')
+            or norm.startswith(f'UPDATE {t.upper()} ')
+            or norm.startswith(f'CREATE TABLE IF NOT EXISTS {t.upper()}')
+            or (norm.startswith('CREATE INDEX IF NOT EXISTS ') and f' ON {t.upper()}(' in norm)
+            for t in ALLOWED_WRITE_TABLES
+        ):
+            raise PermissionError(f'support_agent_write_violation:{sql}')
+    return db.batch(statements)
+
+
+def init(db, include_extended=False):
+    stmts = [(s.strip(), ()) for s in SCHEMA.split(';') if s.strip()]
+    if include_extended:
+        stmts.extend((s.strip(), ()) for s in EXTENDED_SUPPORT_SCHEMA.split(';') if s.strip())
+    _write_support_only(db, stmts)
+
+
+class ReadOnlyTradingDB:
+    """Opens a local SQLite trading database with mode=ro and blocks any write batch."""
+    def __init__(self, sqlite_path):
+        self.path = Path(sqlite_path).resolve()
+        uri = f'file:{self.path.as_posix()}?mode=ro'
+        self.c = sqlite3.connect(uri, uri=True)
+        self.c.row_factory = sqlite3.Row
+
+    def query(self, sql, args=()):
+        norm = ' '.join(str(sql).strip().split()).upper()
+        if not norm.startswith('SELECT ') and not norm.startswith('PRAGMA '):
+            raise PermissionError(f'readonly_trading_db_query_violation:{sql}')
+        return [dict(r) for r in self.c.execute(sql, args).fetchall()]
+
+    def batch(self, stm):
+        raise PermissionError('readonly_trading_db_write_forbidden')
+
+    def close(self):
+        self.c.close()
+
+
+class SupportStore:
+    """Local append-only, hash-chained out/support/support.sqlite store."""
+    def __init__(self, sqlite_path=None):
+        if sqlite_path is None:
+            sqlite_path = ROOT / 'out' / 'support' / 'support.sqlite'
+        self.path = None if str(sqlite_path) == ':memory:' else Path(sqlite_path)
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.c = sqlite3.connect(str(self.path))
+        else:
+            self.c = sqlite3.connect(':memory:')
+        self.c.row_factory = sqlite3.Row
+        init(self, include_extended=True)
+
+    def batch(self, stm):
+        with self.c:
+            for sql, args in stm:
+                self.c.execute(sql, args)
+
+    def query(self, sql, args=()):
+        return [dict(r) for r in self.c.execute(sql, args).fetchall()]
+
+    def close(self):
+        self.c.close()
+
+
+def read_audit_spool(spool_dir=None):
+    """Read logs/audit-spool/ as files without modifying or unlinking any spool file."""
+    target = Path(spool_dir) if spool_dir is not None else (ROOT / 'logs' / 'audit-spool')
+    if not target.exists():
+        return []
+    events = []
+    for p in sorted(target.iterdir()):
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding='utf8').strip()
+            if not text:
+                continue
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    events.append(json.loads(line))
+        except Exception:
+            continue
+    return events
 
 
 def finding_id(detector, correlation_id, first_event_at):
@@ -59,57 +306,142 @@ def finding_id(detector, correlation_id, first_event_at):
     return hashlib.sha256(raw.encode('utf8')).hexdigest()
 
 
-def _utc_now():
-    return datetime.now(timezone.utc).isoformat()
+def _supports_v3_severity(db):
+    try:
+        rows = db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name='support_findings'")
+        if rows and 'SEV1' in str(rows[0].get('sql') or ''):
+            return True
+    except Exception:
+        pass
+    return False
 
 
-ALLOWED_WRITE_TABLES = ('support_findings', 'support_checkpoints')
+def _finding_hashes(db, namespace, fid, seq, detector, correlation_id, first_event_at, session_day, severity, status, obs_flag, notif_flag, user_details, stamp, actor):
+    clean_payload = json.dumps(user_details or {}, sort_keys=True, separators=(',', ':'), default=str)
+    evidence_hash = hashlib.sha256(clean_payload.encode('utf8')).hexdigest()
+    prev_rows = db.query(
+        'SELECT details_json FROM support_findings WHERE namespace=? ORDER BY rowid DESC LIMIT 1',
+        (namespace,),
+    )
+    prev_hash = GENESIS
+    if prev_rows:
+        try:
+            prev_chain = json.loads(prev_rows[0]['details_json']).get('_chain', {})
+            prev_hash = str(prev_chain.get('entry_hash') or GENESIS)
+        except Exception:
+            prev_hash = GENESIS
+    body = {
+        'namespace': str(namespace),
+        'finding_id': str(fid),
+        'status_seq': int(seq),
+        'detector': str(detector),
+        'correlation_id': str(correlation_id),
+        'first_event_at': str(first_event_at),
+        'session_day': str(session_day),
+        'severity': str(severity),
+        'status': str(status),
+        'observation_only': int(obs_flag),
+        'notified': int(notif_flag),
+        'evidence_hash': evidence_hash,
+        'recorded_at': str(stamp),
+        'actor': str(actor),
+    }
+    entry_hash = hashlib.sha256((prev_hash + '\n' + _stable_json(body)).encode('utf8')).hexdigest()
+    enriched = {
+        **(user_details or {}),
+        '_chain': {
+            'actor': str(actor),
+            'evidence_hash': evidence_hash,
+            'prev_hash': prev_hash,
+            'entry_hash': entry_hash,
+            'severity': str(severity),
+            'status': str(status),
+        },
+    }
+    payload = json.dumps(enriched, sort_keys=True, separators=(',', ':'), default=str)
+    return evidence_hash, prev_hash, entry_hash, payload
 
 
-def _write_support_only(db, statements):
-    """Enforce that the Support Agent never mutates trading tables."""
-    for sql, _ in statements:
-        norm = ' '.join(str(sql).strip().split()).upper()
-        if not any(
-            norm.startswith(f'INSERT INTO {t.upper()}')
-            or norm.startswith(f'CREATE TABLE IF NOT EXISTS {t.upper()}')
-            or (norm.startswith('CREATE INDEX IF NOT EXISTS ') and f' ON {t.upper()}(' in norm)
-            for t in ALLOWED_WRITE_TABLES
-        ):
-            raise PermissionError(f'support_agent_write_violation:{sql}')
-    return db.batch(statements)
+def verify_findings_chain(db, namespace):
+    """Verify hash-chain integrity and evidence_hash of support_findings rows."""
+    rows = db.query('SELECT * FROM support_findings WHERE namespace=? ORDER BY rowid', (namespace,))
+    prev = GENESIS
+    failures = []
+    for r in rows:
+        raw_det = json.loads(r.get('details_json') or '{}')
+        chain = raw_det.get('_chain', {})
+        user_det = {k: v for k, v in raw_det.items() if k != '_chain'}
+        clean_payload = json.dumps(user_det, sort_keys=True, separators=(',', ':'), default=str)
+        ev_hash = hashlib.sha256(clean_payload.encode('utf8')).hexdigest()
+        sev = str(chain.get('severity') or r['severity'])
+        st = str(chain.get('status') or r['status'])
+        actor = str(chain.get('actor') or 'support_agent')
+        body = {
+            'namespace': str(r['namespace']),
+            'finding_id': str(r['finding_id']),
+            'status_seq': int(r['status_seq']),
+            'detector': str(r['detector']),
+            'correlation_id': str(r['correlation_id']),
+            'first_event_at': str(r['first_event_at']),
+            'session_day': str(r['session_day']),
+            'severity': sev,
+            'status': st,
+            'observation_only': int(r['observation_only']),
+            'notified': int(r['notified']),
+            'evidence_hash': ev_hash,
+            'recorded_at': str(r['recorded_at']),
+            'actor': actor,
+        }
+        expected = hashlib.sha256((prev + '\n' + _stable_json(body)).encode('utf8')).hexdigest()
+        if chain.get('evidence_hash') != ev_hash or chain.get('prev_hash') != prev or chain.get('entry_hash') != expected:
+            failures.append({
+                'finding_id': r['finding_id'],
+                'status_seq': int(r['status_seq']),
+                'reason': 'support_finding_hash_chain_mismatch',
+            })
+        prev = str(chain.get('entry_hash') or '')
+    return failures
 
 
-
-def append_finding(db, namespace, detector, correlation_id, first_event_at, session_day, severity='WARN', status='OPEN', details=None, observation_only=True, notified=False, recorded_at=None):
+def append_finding(db, namespace, detector, correlation_id, first_event_at, session_day, severity='WARN', status='OPEN', details=None, observation_only=True, notified=False, recorded_at=None, actor='support_agent'):
     """Append an initial OPEN finding idempotently without mutating existing rows."""
     if status not in VALID_STATUSES:
         raise ValueError('invalid_finding_status')
     if severity not in VALID_SEVERITIES:
         raise ValueError('invalid_finding_severity')
+    session_day = ist_session_day(session_day)
     fid = finding_id(detector, correlation_id, first_event_at)
     existing = db.query(
-        'SELECT status_seq,status FROM support_findings WHERE namespace=? AND finding_id=? ORDER BY status_seq DESC LIMIT 1',
+        'SELECT status_seq,status,severity,details_json FROM support_findings WHERE namespace=? AND finding_id=? ORDER BY status_seq DESC LIMIT 1',
         (namespace, fid),
     )
     if existing and status == 'OPEN':
-        return {'created': False, 'finding_id': fid, 'status_seq': int(existing[0]['status_seq']), 'status': existing[0]['status']}
+        ex_det = json.loads(existing[0]['details_json'] or '{}')
+        ex_sev = ex_det.get('_chain', {}).get('severity', existing[0]['severity'])
+        return {'created': False, 'finding_id': fid, 'status_seq': int(existing[0]['status_seq']), 'status': existing[0]['status'], 'severity': ex_sev}
     seq = (int(existing[0]['status_seq']) + 1) if existing else 1
     stamp = recorded_at or _utc_now()
     obs_flag = 1 if observation_only else 0
     notif_flag = 0 if observation_only else (1 if notified else 0)
-    payload = json.dumps(details or {}, sort_keys=True, separators=(',', ':'), default=str)
+    ev_hash, prev_hash, entry_hash, payload = _finding_hashes(
+        db, namespace, fid, seq, detector, correlation_id, first_event_at, session_day,
+        severity, status, obs_flag, notif_flag, details or {}, stamp, actor,
+    )
+    sql_sev = severity if _supports_v3_severity(db) else LEGACY_SEV_TO_SQL.get(severity, severity)
+    sql_status = status if (status != 'VERIFIED' or _supports_v3_severity(db)) else 'RESOLVED'
     _write_support_only(db, [(
         'INSERT INTO support_findings(namespace,finding_id,status_seq,detector,correlation_id,first_event_at,session_day,severity,status,observation_only,notified,details_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        (namespace, fid, seq, str(detector), str(correlation_id), str(first_event_at), str(session_day), severity, status, obs_flag, notif_flag, payload, stamp),
+        (namespace, fid, seq, str(detector), str(correlation_id), str(first_event_at), str(session_day), sql_sev, sql_status, obs_flag, notif_flag, payload, stamp),
     )])
-    return {'created': True, 'finding_id': fid, 'status_seq': seq, 'status': status}
+    return {'created': True, 'finding_id': fid, 'status_seq': seq, 'status': status, 'severity': severity, 'entry_hash': entry_hash, 'evidence_hash': ev_hash, 'prev_hash': prev_hash}
 
 
-def transition_finding(db, namespace, fid, new_status, note=None, recorded_at=None):
-    """Record an immutable status transition as a new append-only row."""
+def transition_finding(db, namespace, fid, new_status, note=None, recorded_at=None, actor='support_agent', new_severity=None, extra_details=None):
+    """Record an immutable status (or severity escalation) transition as a new append-only row."""
     if new_status not in VALID_STATUSES:
         raise ValueError('invalid_finding_status')
+    if new_severity is not None and new_severity not in VALID_SEVERITIES:
+        raise ValueError('invalid_finding_severity')
     rows = db.query(
         'SELECT * FROM support_findings WHERE namespace=? AND finding_id=? ORDER BY status_seq DESC LIMIT 1',
         (namespace, fid),
@@ -118,12 +450,27 @@ def transition_finding(db, namespace, fid, new_status, note=None, recorded_at=No
         raise KeyError('finding_not_found')
     latest = rows[0]
     seq = int(latest['status_seq']) + 1
-    details = json.loads(latest['details_json'])
+    raw_latest = json.loads(latest['details_json'])
+    latest_chain = raw_latest.get('_chain', {})
+    prev_status = latest_chain.get('status', latest['status'])
+    prev_sev = latest_chain.get('severity', latest['severity'])
+    user_details = {k: v for k, v in raw_latest.items() if k != '_chain'}
+    user_details = {**user_details, 'previous_status': prev_status, 'status_actor': str(actor)}
     if note is not None:
-        details = {**details, 'status_note': str(note), 'previous_status': latest['status']}
-    else:
-        details = {**details, 'previous_status': latest['status']}
+        user_details['status_note'] = str(note)
+    if extra_details:
+        user_details.update(extra_details)
+    sev = new_severity or prev_sev
     stamp = recorded_at or _utc_now()
+    obs_flag = int(latest['observation_only'])
+    notif_flag = 0
+    ev_hash, prev_hash, entry_hash, payload = _finding_hashes(
+        db, namespace, fid, seq, latest['detector'], latest['correlation_id'],
+        latest['first_event_at'], latest['session_day'], sev, new_status,
+        obs_flag, notif_flag, user_details, stamp, actor,
+    )
+    sql_sev = sev if _supports_v3_severity(db) else LEGACY_SEV_TO_SQL.get(sev, sev)
+    sql_status = new_status if (new_status != 'VERIFIED' or _supports_v3_severity(db)) else 'RESOLVED'
     _write_support_only(db, [(
         'INSERT INTO support_findings(namespace,finding_id,status_seq,detector,correlation_id,first_event_at,session_day,severity,status,observation_only,notified,details_json,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (
@@ -134,15 +481,151 @@ def transition_finding(db, namespace, fid, new_status, note=None, recorded_at=No
             latest['correlation_id'],
             latest['first_event_at'],
             latest['session_day'],
-            latest['severity'],
-            new_status,
-            int(latest['observation_only']),
-            0,
-            json.dumps(details, sort_keys=True, separators=(',', ':'), default=str),
+            sql_sev,
+            sql_status,
+            obs_flag,
+            notif_flag,
+            payload,
             stamp,
         ),
     )])
-    return {'finding_id': fid, 'status_seq': seq, 'status': new_status}
+    return {'finding_id': fid, 'status_seq': seq, 'status': new_status, 'severity': sev, 'actor': actor, 'entry_hash': entry_hash}
+
+
+def record_episode(db, namespace, session_day, expectation, detector, event_at, blind_seconds=0.0, base_severity='SEV3', details=None, observation_only=True, recorded_at=None, event_id=None):
+    """Deduplicate absence/degradation findings into an open episode keyed on session_day + expectation.
+
+    Escalation (v3): episodes count occurrence_count and cumulative_blind_seconds; crossing policy
+    limits (episode.escalate_blind_seconds or episode.escalate_occurrences) lifts SEV3 to SEV2 and informs once.
+    """
+    session_day = ist_session_day(session_day)
+    ep_key = f'{session_day}:{expectation}'
+    cid = f'episode:{ep_key}'
+    ev_token = str(event_id or f'{ep_key}:{event_at}')
+    stamp = recorded_at or _utc_now()
+    ep_cfg = SUPPORT_POLICY['episode']
+    max_blind = float(ep_cfg['escalate_blind_seconds'])
+    max_occ = int(ep_cfg['escalate_occurrences'])
+
+    has_ep_table = bool(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='support_episodes'"))
+    all_ep_findings = [
+        f for f in current_findings(db, namespace, session_day)
+        if f['detector'] == detector and f['correlation_id'] == cid
+    ]
+    for f in all_ep_findings:
+        if ev_token in set(f['details'].get('seen_event_ids', [])):
+            return {
+                'created': False,
+                'finding_id': f['finding_id'],
+                'status_seq': f['status_seq'],
+                'status': f['status'],
+                'severity': f['severity'],
+                'episode_id': ep_key,
+                'occurrence_count': f['details'].get('occurrence_count', 1),
+                'cumulative_blind_seconds': f['details'].get('cumulative_blind_seconds', 0.0),
+                'escalated': f['details'].get('escalated', False),
+                'inform_immediately': False,
+            }
+
+    existing_findings = [f for f in all_ep_findings if f['status'] == 'OPEN']
+    if not existing_findings:
+        occ = 1
+        cum_blind = float(blind_seconds or 0.0)
+        escalated = (base_severity == 'SEV3') and (cum_blind >= max_blind or occ >= max_occ)
+        cur_sev = 'SEV2' if escalated else base_severity
+        ep_details = {
+            **(details or {}),
+            'expectation': expectation,
+            'occurrence_count': occ,
+            'cumulative_blind_seconds': cum_blind,
+            'escalated': escalated,
+            'episode_status': 'OPEN',
+            'seen_event_ids': [ev_token],
+        }
+        res = append_finding(
+            db, namespace, detector, cid, str(event_at), session_day,
+            severity=cur_sev, status='OPEN', details=ep_details,
+            observation_only=observation_only, notified=False, recorded_at=stamp,
+        )
+        if has_ep_table:
+            _write_support_only(db, [(
+                'INSERT OR REPLACE INTO support_episodes(namespace,episode_id,session_day,expectation,detector,finding_id,base_severity,current_severity,occurrence_count,cumulative_blind_seconds,escalated,informed_escalation,status,opened_at,updated_at,closed_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (namespace, ep_key, session_day, expectation, detector, res['finding_id'], base_severity, cur_sev, occ, cum_blind, int(escalated), int(escalated and not observation_only), 'OPEN', str(event_at), stamp, None, json.dumps(ep_details, sort_keys=True)),
+            )])
+        return {**res, 'episode_id': ep_key, 'occurrence_count': occ, 'cumulative_blind_seconds': cum_blind, 'escalated': escalated, 'inform_immediately': cur_sev in ('SEV1', 'SEV2')}
+
+    latest = existing_findings[0]
+    fid = latest['finding_id']
+    prev_det = latest['details']
+    seen_ids = list(prev_det.get('seen_event_ids', []))
+    if ev_token not in seen_ids:
+        seen_ids.append(ev_token)
+    occ = int(prev_det.get('occurrence_count', 1)) + 1
+    cum_blind = float(prev_det.get('cumulative_blind_seconds', 0.0)) + float(blind_seconds or 0.0)
+    was_escalated = bool(prev_det.get('escalated', False))
+    should_escalate = (base_severity == 'SEV3') and (cum_blind >= max_blind or occ >= max_occ)
+    escalated = was_escalated or should_escalate
+    cur_sev = 'SEV2' if escalated else latest['severity']
+    newly_escalated = escalated and not was_escalated
+    merged_details = {
+        **prev_det,
+        **(details or {}),
+        'expectation': expectation,
+        'occurrence_count': occ,
+        'cumulative_blind_seconds': cum_blind,
+        'escalated': escalated,
+        'last_event_at': str(event_at),
+        'episode_status': 'OPEN',
+        'seen_event_ids': seen_ids,
+    }
+    tr = transition_finding(
+        db, namespace, fid, 'OPEN',
+        note='escalated_to_SEV2' if newly_escalated else 'episode_repeat',
+        recorded_at=stamp,
+        new_severity=cur_sev,
+        extra_details=merged_details,
+    )
+    if has_ep_table:
+        _write_support_only(db, [(
+            'INSERT OR REPLACE INTO support_episodes(namespace,episode_id,session_day,expectation,detector,finding_id,base_severity,current_severity,occurrence_count,cumulative_blind_seconds,escalated,informed_escalation,status,opened_at,updated_at,closed_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (namespace, ep_key, session_day, expectation, detector, fid, base_severity, cur_sev, occ, cum_blind, int(escalated), int(newly_escalated and not observation_only), 'OPEN', latest['first_event_at'], stamp, None, json.dumps(merged_details, sort_keys=True)),
+        )])
+    return {'created': False, 'finding_id': fid, 'status_seq': tr['status_seq'], 'status': 'OPEN', 'severity': cur_sev, 'episode_id': ep_key, 'occurrence_count': occ, 'cumulative_blind_seconds': cum_blind, 'escalated': escalated, 'newly_escalated': newly_escalated, 'inform_immediately': newly_escalated}
+
+
+def close_episode(db, namespace, session_day, expectation, detector, recovered_at, recovery_details=None, recorded_at=None):
+    """Close an open episode on recovery without deleting the finding history."""
+    session_day = ist_session_day(session_day)
+    ep_key = f'{session_day}:{expectation}'
+    cid = f'episode:{ep_key}'
+    stamp = recorded_at or _utc_now()
+    existing_findings = [
+        f for f in current_findings(db, namespace, session_day)
+        if f['detector'] == detector and f['correlation_id'] == cid and f['status'] == 'OPEN'
+    ]
+    if not existing_findings:
+        return None
+    latest = existing_findings[0]
+    fid = latest['finding_id']
+    extra = {
+        **(recovery_details or {}),
+        'recovered': True,
+        'recovered_at': str(recovered_at),
+        'episode_status': 'CLOSED',
+    }
+    tr = transition_finding(
+        db, namespace, fid, 'RESOLVED',
+        note='episode_recovered',
+        recorded_at=stamp,
+        extra_details=extra,
+    )
+    has_ep_table = bool(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='support_episodes'"))
+    if has_ep_table:
+        _write_support_only(db, [(
+            'UPDATE support_episodes SET status=?,closed_at=?,updated_at=? WHERE namespace=? AND episode_id=?',
+            ('CLOSED', str(recovered_at), stamp, namespace, ep_key),
+        )])
+    return tr
 
 
 def current_findings(db, namespace, session_day=None):
@@ -150,7 +633,7 @@ def current_findings(db, namespace, session_day=None):
     if session_day:
         rows = db.query(
             'SELECT * FROM support_findings WHERE namespace=? AND session_day=? ORDER BY finding_id,status_seq',
-            (namespace, str(session_day)),
+            (namespace, ist_session_day(session_day)),
         )
     else:
         rows = db.query(
@@ -164,8 +647,21 @@ def current_findings(db, namespace, session_day=None):
     for fid, hist in grouped.items():
         latest = dict(hist[-1])
         latest['history_count'] = len(hist)
-        latest['statuses'] = [h['status'] for h in hist]
-        latest['details'] = json.loads(latest['details_json'])
+        raw_det = json.loads(latest['details_json'] or '{}')
+        chain = raw_det.get('_chain', {})
+        latest['details'] = {k: v for k, v in raw_det.items() if k != '_chain'}
+        if chain:
+            latest['severity'] = chain.get('severity', latest['severity'])
+            latest['status'] = chain.get('status', latest['status'])
+            latest['actor'] = chain.get('actor', 'support_agent')
+            latest['evidence_hash'] = chain.get('evidence_hash', '')
+            latest['prev_hash'] = chain.get('prev_hash', '')
+            latest['entry_hash'] = chain.get('entry_hash', '')
+        statuses = []
+        for h in hist:
+            hc = json.loads(h.get('details_json') or '{}').get('_chain', {})
+            statuses.append(hc.get('status', h['status']))
+        latest['statuses'] = statuses
         out.append(latest)
     return out
 
@@ -191,15 +687,16 @@ def event_correlation_id(event_row):
     return str(payload.get('correlation_id') or event_row.get('signal_id') or event_row.get('run_id') or event_row.get('event_id'))
 
 
-def consume_checkpoint(db, namespace, batch_limit=500, recorded_at=None):
+def consume_checkpoint(db, namespace, batch_limit=500, recorded_at=None, trading_db=None):
     """Consume new paper_events and paper_decisions after the stored checkpoint (read-only on trading tables)."""
+    reader = trading_db if trading_db is not None else db
     cp = get_checkpoint(db, namespace)
-    events = db.query(
+    events = reader.query(
         'SELECT * FROM paper_events WHERE namespace=? AND (recorded_at>? OR (recorded_at=? AND event_id>?)) ORDER BY recorded_at,event_id LIMIT ?',
         (namespace, cp['last_recorded_at'], cp['last_recorded_at'], cp['last_event_id'], int(batch_limit)),
     )
     try:
-        decisions = db.query(
+        decisions = reader.query(
             'SELECT * FROM paper_decisions WHERE namespace=? AND seq>? ORDER BY seq LIMIT ?',
             (namespace, cp['last_decision_seq'], int(batch_limit)),
         )
@@ -280,16 +777,26 @@ def verify_decision_reconstruction(decisions):
     return failures
 
 
-def run_detectors(db, namespace, session_day, observation_only=True, stale_threshold_seconds=120, recorded_at=None):
-    """Run the 7 deterministic support detectors (read-only on trading tables)."""
+def run_detectors(db, namespace, session_day, observation_only=True, stale_threshold_seconds=None, recorded_at=None, trading_db=None):
+    """Run the deterministic support detectors (read-only on trading tables)."""
     if INCOMPLETE_LIFECYCLE_MINUTES is not None:
         raise RuntimeError('incomplete_lifecycle_minutes_must_not_be_invented')
-    session_day = str(session_day)
-    events = db.query('SELECT * FROM paper_events WHERE namespace=? AND session_day=? ORDER BY recorded_at,event_id', (namespace, session_day))
-    all_decisions = db.query('SELECT * FROM paper_decisions WHERE namespace=? ORDER BY seq', (namespace,))
-    day_decisions = [d for d in all_decisions if str(d.get('source_at') or '')[:10] == session_day or str(d.get('recorded_at') or '')[:10] == session_day]
-    if not day_decisions and all_decisions:
-        day_decisions = all_decisions
+    reader = trading_db if trading_db is not None else db
+    session_day = ist_session_day(session_day)
+    if stale_threshold_seconds is None:
+        stale_threshold_seconds = int(CFG['worker_stale_seconds'])
+    counts = derived_counts()
+    expected_symbols = counts['expected_symbols']
+    expected_cells = counts['expected_strategy_cells']
+
+    events = reader.query('SELECT * FROM paper_events WHERE namespace=? AND session_day=? ORDER BY recorded_at,event_id', (namespace, session_day))
+    all_decisions = reader.query('SELECT * FROM paper_decisions WHERE namespace=? ORDER BY seq', (namespace,))
+    # IST session_day matching without all-days fallback
+    day_decisions = [
+        d for d in all_decisions
+        if (d.get('source_at') and ist_session_day(d['source_at']) == session_day)
+        or (d.get('recorded_at') and ist_session_day(d['recorded_at']) == session_day)
+    ]
     created = []
 
     def record(detector, cid, first_at, severity, details):
@@ -300,7 +807,7 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
         )
         created.append({**res, 'detector': detector, 'correlation_id': cid})
 
-    # 1. coverage_gap
+    # 1. coverage_gap (derived counts from files, replacing hardcoded 751 and 5257)
     scan_runs = {}
     for ev in events:
         rid = ev['run_id']
@@ -315,13 +822,13 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
         elif ev['event_type'] == 'scan_completed':
             sr['completed'] = True
     for rid, sr in scan_runs.items():
-        if sr['completed'] and (len(sr['prefilter']) < 751 or sr['strategy_cells'] < 5257):
+        if sr['completed'] and (len(sr['prefilter']) < expected_symbols or sr['strategy_cells'] < expected_cells):
             record('coverage_gap', rid, sr['first_at'], 'WARN', {
                 'run_id': rid,
                 'prefilter_symbols': len(sr['prefilter']),
-                'expected_symbols': 751,
+                'expected_symbols': expected_symbols,
                 'strategy_cells': sr['strategy_cells'],
-                'expected_strategy_cells': 5257,
+                'expected_strategy_cells': expected_cells,
             })
 
     # 2. incomplete_lifecycle (no numeric minute timeout invented)
@@ -373,7 +880,7 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
                 'event_id': ev['event_id'],
             })
 
-    # 4. placeholder_text
+    # 4. placeholder_text (unclassified_condition moved to error_taxonomy_gap in v3)
     for dec in day_decisions:
         raw = str(dec.get('payload_json') or '')
         m = PLACEHOLDER_PATTERN.search(raw)
@@ -396,7 +903,7 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
     # 5. reconstruction_failure
     for fail in verify_decision_reconstruction(all_decisions):
         cid = str(fail.get('correlation_id') or f"seq:{fail['seq']}")
-        first_at = str(fail.get('source_at') or f'{session_day}T00:00:00+00:00')
+        first_at = str(fail.get('source_at') or f'{session_day}T00:00:00+05:30')
         record('reconstruction_failure', cid, first_at, 'CRITICAL', fail)
 
     # 6. monitor_staleness
@@ -404,7 +911,7 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
     for ev in events:
         if ev['event_type'] == 'monitor_completed':
             try:
-                check_times.append((datetime.fromisoformat(str(ev['source_at']).replace('Z', '+00:00')), ev))
+                check_times.append((parse_ist(ev['source_at']), ev))
             except Exception:
                 pass
         elif ev['event_type'] == 'guardian_check':
@@ -452,9 +959,455 @@ def run_detectors(db, namespace, session_day, observation_only=True, stale_thres
     }
 
 
-def session_report(db, namespace, session_day, out_dir=None):
+def run_v3_production_detectors(db, namespace, session_day, now_at=None, trading_db=None, observation_only=True, check_policy_hygiene=False, box_metrics=None, dashboard_probe=None, recorded_at=None):
+    """Run the full Production Action Plan v3 detector suite (SEV1-SEV4 + expectation ledger + episodes)."""
+    assert_support_policy_lock()
+    reader = trading_db if trading_db is not None else db
+    session_day = ist_session_day(session_day)
+    now_ist = parse_ist(now_at) if now_at is not None else parse_ist(f'{session_day}T16:35:00+05:30')
+    stamp = recorded_at or now_ist.isoformat()
+
+    raw_events = reader.query('SELECT * FROM paper_events WHERE namespace=? AND session_day=? ORDER BY source_at,event_id', (namespace, session_day))
+    events = [ev for ev in raw_events if parse_ist(ev['source_at']) <= now_ist]
+    all_decisions = reader.query('SELECT * FROM paper_decisions WHERE namespace=? ORDER BY seq', (namespace,))
+    day_decisions = [
+        d for d in all_decisions
+        if ((d.get('source_at') and ist_session_day(d['source_at']) == session_day)
+            or (d.get('recorded_at') and ist_session_day(d['recorded_at']) == session_day))
+        and parse_ist(d.get('source_at') or d.get('recorded_at')) <= now_ist
+    ]
+    fills = reader.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY filled_at,id', (namespace,))
+    day_fills = [
+        f for f in fills
+        if f.get('filled_at') and ist_session_day(f['filled_at']) == session_day and parse_ist(f['filled_at']) <= now_ist
+    ]
+    signals = reader.query('SELECT * FROM paper_signals WHERE namespace=?', (namespace,))
+    sig_by_id = {str(s['id']): s for s in signals}
+    try:
+        bands = reader.query('SELECT * FROM paper_price_bands WHERE trade_date=?', (session_day,))
+    except Exception:
+        bands = []
+
+    results = []
+    not_evaluable = {}
+
+    def emit(detector, cid, first_at, severity, details):
+        res = append_finding(
+            db, namespace, detector, cid, str(first_at), session_day,
+            severity=severity, status='OPEN', details=details,
+            observation_only=observation_only, notified=False, recorded_at=stamp,
+        )
+        results.append({**res, 'detector': detector, 'correlation_id': cid})
+        return res
+
+    # Policy hygiene at 08:30 (once per day and key for null SEV3/SEV4 values)
+    if check_policy_hygiene or (now_ist.hour == 8 and now_ist.minute == 30):
+        for item in missing_policy_values():
+            key = item['key']
+            emit('policy_value_missing', f'policy_missing:{session_day}:{key}', f'{session_day}T08:30:00+05:30', 'SEV4', {
+                'policy_key': key,
+                'target_severity': item['target_severity'],
+            })
+
+    if not is_trading_day(session_day):
+        return {
+            'namespace': namespace,
+            'session_day': session_day,
+            'trading_day': False,
+            'results': results,
+            'not_evaluable': not_evaluable,
+        }
+
+    exp = SUPPORT_POLICY['expectations']
+    thresh = SUPPORT_POLICY['thresholds']
+    target_notional = float(CAP_POLICY['target_notional_inr'])
+    max_sleeve_slots = int(CAP_POLICY['max_positions_per_sleeve'])
+    poll_sec = float(CFG['poll_seconds'])
+    latency_mult = float(SUPPORT_POLICY['latency']['signal_to_fill_poll_multiple'])
+
+    # 1. Pre-market scan expectation (08:45 + 15m grace -> 09:00 IST) -> scan_missed (SEV2)
+    scan_exp = exp['premarket_scan']
+    scan_h, scan_m = [int(x) for x in scan_exp['expected_at'].split(':')]
+    scan_deadline = datetime(
+        int(session_day[:4]), int(session_day[5:7]), int(session_day[8:10]),
+        scan_h, scan_m, tzinfo=IST,
+    ) + timedelta(minutes=int(scan_exp['grace_minutes']))
+    premarket_scans = [
+        ev for ev in events
+        if ev['event_type'] == 'scan_completed' and parse_ist(ev['source_at']) <= scan_deadline
+    ]
+    premarket_failed = [
+        ev for ev in events
+        if ev['event_type'] == 'scan_failed' and parse_ist(ev['source_at']) <= scan_deadline
+    ]
+    if now_ist >= scan_deadline and (not premarket_scans or premarket_failed):
+        first_at = premarket_failed[0]['source_at'] if premarket_failed else f"{session_day}T{scan_exp['expected_at']}:00+05:30"
+        ep = record_episode(
+            db, namespace, session_day, 'premarket_scan_0845', 'scan_missed',
+            first_at, blind_seconds=float(scan_exp['grace_minutes']) * 60,
+            base_severity='SEV2', details={'expected_at': scan_exp['expected_at'], 'deadline_at': scan_deadline.isoformat(), 'failed_events': len(premarket_failed)},
+            observation_only=observation_only, recorded_at=stamp, event_id=f'scan_missed:{session_day}',
+        )
+        results.append({**ep, 'detector': 'scan_missed'})
+
+    # 2. Worker down & Monitor coverage staleness (09:15 - 15:30 IST)
+    w_exp = exp['worker_active']
+    ws_h, ws_m = [int(x) for x in w_exp['start_at'].split(':')]
+    we_h, we_m = [int(x) for x in w_exp['end_at'].split(':')]
+    session_start = datetime(int(session_day[:4]), int(session_day[5:7]), int(session_day[8:10]), ws_h, ws_m, tzinfo=IST)
+    session_end = datetime(int(session_day[:4]), int(session_day[5:7]), int(session_day[8:10]), we_h, we_m, tzinfo=IST)
+    monitor_events = [
+        (parse_ist(ev['source_at']), ev)
+        for ev in events
+        if ev['event_type'] in ('monitor_completed', 'monitor_idle', 'monitor_check')
+    ]
+    monitor_events.sort(key=lambda x: x[0])
+
+    if now_ist >= session_start + timedelta(seconds=int(w_exp['grace_seconds'])):
+        if not monitor_events:
+            blind = max(0.0, (min(now_ist, session_end) - session_start).total_seconds())
+            ep = record_episode(
+                db, namespace, session_day, 'worker_active_0915', 'worker_down',
+                session_start.isoformat(), blind_seconds=blind,
+                base_severity='SEV2', details={'window_start': '09:15', 'first_check': None, 'blind_seconds': blind},
+                observation_only=observation_only, recorded_at=stamp, event_id=f'worker_down:{session_day}:0915',
+            )
+            results.append({**ep, 'detector': 'worker_down'})
+        else:
+            first_check_dt, first_ev = monitor_events[0]
+            last_check_dt, _ = monitor_events[-1]
+            initial_gap = (first_check_dt - session_start).total_seconds()
+            if initial_gap > float(w_exp['grace_seconds']):
+                ep = record_episode(
+                    db, namespace, session_day, 'worker_active_0915', 'worker_down',
+                    session_start.isoformat(), blind_seconds=initial_gap,
+                    base_severity='SEV2',
+                    details={
+                        'window_start': '09:15',
+                        'first_check': first_check_dt.strftime('%H:%M:%S'),
+                        'blind_window': f"09:15-{first_check_dt.strftime('%H:%M')}",
+                        'blind_seconds': initial_gap,
+                    },
+                    observation_only=observation_only, recorded_at=stamp, event_id=f'worker_down:{session_day}:0915',
+                )
+                results.append({**ep, 'detector': 'worker_down'})
+                emit('monitor_staleness', f'monitor_staleness:{session_day}', first_ev['source_at'], 'SEV2', {
+                    'first_check': first_check_dt.strftime('%H:%M:%S'),
+                    'last_check': last_check_dt.strftime('%H:%M:%S'),
+                    'initial_gap_seconds': initial_gap,
+                })
+
+    # 3. Scan lock blocked gaps -> lock_blocked_gap (SEV3, escalates to SEV2 via episode rules)
+    lock_gap_min = float(thresh['lock_blocked_gap_seconds'])
+    for ev in events:
+        if ev['event_type'] in ('lock_blocked_gap', 'worker_lock_blocked'):
+            data = json.loads(ev.get('data_json') or '{}')
+            gap_s = float(data.get('gap_seconds') or data.get('blocked_seconds') or 0.0)
+            if gap_s >= lock_gap_min:
+                ep = record_episode(
+                    db, namespace, session_day, 'scan_lock_contention', 'lock_blocked_gap',
+                    ev['source_at'], blind_seconds=gap_s, base_severity='SEV3',
+                    details={'gap_seconds': gap_s, 'event_id': ev['event_id']},
+                    observation_only=observation_only, recorded_at=stamp, event_id=ev['event_id'],
+                )
+                results.append({**ep, 'detector': 'lock_blocked_gap'})
+
+    # 4. Worker errors -> error_taxonomy_gap (SEV3)
+    unclassified_events = []
+    for ev in events:
+        raw = str(ev.get('data_json') or '')
+        if ev['event_type'] == 'worker_error_unclassified' or ERROR_TAXONOMY_PATTERN.search(raw) or ev.get('outcome') == 'unclassified_condition':
+            unclassified_events.append(ev)
+    for dec in day_decisions:
+        raw = str(dec.get('payload_json') or '')
+        if ERROR_TAXONOMY_PATTERN.search(raw) or dec.get('cause') == 'unclassified_condition':
+            unclassified_events.append(dec)
+    if unclassified_events:
+        first_src = unclassified_events[0].get('source_at') or f'{session_day}T09:15:00+05:30'
+        emit('error_taxonomy_gap', f'error_taxonomy_gap:{session_day}', first_src, 'SEV3', {
+            'unclassified_count': len(unclassified_events),
+            'events': [str(x.get('event_id') or x.get('correlation_id')) for x in unclassified_events],
+        })
+
+    # 5. Quotes -> quote_batch_failed + recovery (SEV3) & quote_field_regression (SEV1)
+    for ev in events:
+        data = json.loads(ev.get('data_json') or '{}')
+        if ev['event_type'] == 'quote_batch_failed':
+            ep = record_episode(
+                db, namespace, session_day, 'quote_batch', 'quote_batch_failed',
+                ev['source_at'], blind_seconds=float(data.get('timeout_seconds') or thresh['quote_timeout_seconds']),
+                base_severity='SEV3', details={'timeout_seconds': data.get('timeout_seconds', thresh['quote_timeout_seconds']), 'at': ev['source_at']},
+                observation_only=observation_only, recorded_at=stamp, event_id=ev['event_id'],
+            )
+            results.append({**ep, 'detector': 'quote_batch_failed'})
+        elif ev['event_type'] == 'quote_batch_recovered':
+            close_episode(
+                db, namespace, session_day, 'quote_batch', 'quote_batch_failed',
+                ev['source_at'], recovery_details={'recovered_at': ev['source_at']}, recorded_at=stamp,
+            )
+        elif ev['event_type'] == 'quote_field_check' or 'quote_timestamp_field' in data:
+            if data.get('quote_timestamp_field') == 'tt' and not data.get('used_depth_ltt', False):
+                emit('quote_field_regression', f"quote_field_regression:{ev['event_id']}", ev['source_at'], 'SEV1', {
+                    'field_used': 'tt',
+                    'expected_field': 'ltt',
+                })
+
+    # 6. Fill sizing -> fill_sizing_anomaly (SEV1, new v3)
+    one_share_anomalies = []
+    for f in day_fills:
+        if str(f.get('side', 'BUY')).upper() != 'BUY':
+            continue
+        price = float(f.get('price') or 0.0)
+        qty = int(f.get('qty') or f.get('quantity') or 0)
+        if price > 0:
+            expected_qty = int(math.floor(target_notional / price))
+            if qty == 1 and expected_qty > 1:
+                one_share_anomalies.append({
+                    'fill_id': f.get('id'),
+                    'symbol': f.get('symbol'),
+                    'strategy': f.get('strategy'),
+                    'price': price,
+                    'filled_qty': qty,
+                    'expected_qty': expected_qty,
+                    'filled_at': f.get('filled_at'),
+                })
+    if one_share_anomalies:
+        emit('fill_sizing_anomaly', f'fill_sizing_anomaly:{session_day}', one_share_anomalies[0]['filled_at'], 'SEV1', {
+            'anomaly_count': len(one_share_anomalies),
+            'target_notional_inr': target_notional,
+            'samples': one_share_anomalies,
+        })
+
+    # 7. Order gates -> sleeve_over_limit_new_buy (SEV1), duplicate_fill (SEV1), asm_gsm_buy (SEV1 or not_evaluable)
+    buys_by_strategy = {}
+    seen_strat_symbol = set()
+    dup_fills = []
+    for f in day_fills:
+        if str(f.get('side', 'BUY')).upper() == 'BUY':
+            st = int(f['strategy'])
+            buys_by_strategy.setdefault(st, []).append(f)
+            key = (st, f['symbol'], f.get('signal_id'))
+            if key in seen_strat_symbol:
+                dup_fills.append(f)
+            seen_strat_symbol.add(key)
+    for st, st_fills in sorted(buys_by_strategy.items()):
+        if len(st_fills) > max_sleeve_slots:
+            emit('sleeve_over_limit_new_buy', f'sleeve_over_limit:{session_day}:S{st}', st_fills[max_sleeve_slots]['filled_at'], 'SEV1', {
+                'strategy': st,
+                'buy_count': len(st_fills),
+                'max_positions_per_sleeve': max_sleeve_slots,
+            })
+    if dup_fills:
+        emit('duplicate_fill', f'duplicate_fill:{session_day}', dup_fills[0]['filled_at'], 'SEV1', {
+            'duplicate_count': len(dup_fills),
+            'fills': [d.get('id') for d in dup_fills],
+        })
+
+    if not bands:
+        not_evaluable['asm_gsm_buy'] = 'reference_feed_not_loaded_for_session'
+    else:
+        restricted = {b['symbol'] for b in bands if b.get('asm_stage') or b.get('gsm_stage') or b.get('surveillance')}
+        asm_buys = [f for f in day_fills if str(f.get('side', 'BUY')).upper() == 'BUY' and f.get('symbol') in restricted]
+        if asm_buys:
+            emit('asm_gsm_buy', f'asm_gsm_buy:{session_day}', asm_buys[0]['filled_at'], 'SEV1', {
+                'symbols': [a['symbol'] for a in asm_buys],
+            })
+
+    # 8. Execution latency -> signal_to_fill_latency (SEV3, new v3)
+    max_latency_sec = poll_sec * latency_mult
+    high_latency_fills = []
+    for f in day_fills:
+        sid = str(f.get('signal_id') or '')
+        sig = sig_by_id.get(sid)
+        if sig and sig.get('created_at') and f.get('filled_at'):
+            created_dt = parse_ist(sig['created_at'])
+            filled_dt = parse_ist(f['filled_at'])
+            if created_dt.date() == filled_dt.date():
+                lat_sec = (filled_dt - created_dt).total_seconds()
+                if lat_sec > max_latency_sec:
+                    high_latency_fills.append({
+                        'signal_id': sid,
+                        'symbol': f.get('symbol'),
+                        'created_at': sig['created_at'],
+                        'filled_at': f['filled_at'],
+                        'latency_seconds': lat_sec,
+                        'threshold_seconds': max_latency_sec,
+                    })
+    for ev in events:
+        if ev['event_type'] == 'signal_to_fill_latency':
+            data = json.loads(ev.get('data_json') or '{}')
+            lat_sec = float(data.get('latency_seconds') or 0.0)
+            if lat_sec > max_latency_sec:
+                high_latency_fills.append({
+                    'signal_id': ev.get('signal_id'),
+                    'created_at': data.get('scan_at'),
+                    'filled_at': data.get('fill_at') or ev['source_at'],
+                    'latency_seconds': lat_sec,
+                    'threshold_seconds': max_latency_sec,
+                })
+    if high_latency_fills:
+        emit('signal_to_fill_latency', f'signal_to_fill_latency:{session_day}', high_latency_fills[0]['filled_at'], 'SEV3', {
+            'count': len(high_latency_fills),
+            'max_latency_seconds': max(x['latency_seconds'] for x in high_latency_fills),
+            'threshold_seconds': max_latency_sec,
+            'samples': high_latency_fills,
+        })
+
+    # 9. Exits -> exit_path_unexercised (SEV4) after session close
+    if now_ist >= session_end:
+        sell_fills = [f for f in day_fills if str(f.get('side', '')).upper() == 'SELL']
+        stop_events = [ev for ev in events if ev['event_type'] in ('stop_hit', 'target_hit', 'trail_stop_filled')]
+        if not sell_fills and not stop_events:
+            emit('exit_path_unexercised', f'exit_path_unexercised:{session_day}', session_end.isoformat(), 'SEV4', {
+                'sell_fills': 0,
+                'stop_or_target_hits': 0,
+            })
+
+    # 10. EOD expectation (16:15 + 20m grace = 16:35 IST) -> eod_missed (SEV1)
+    eod_exp = exp['eod_reconciliation']
+    eh, em = [int(x) for x in eod_exp['expected_at'].split(':')]
+    eod_deadline = datetime(
+        int(session_day[:4]), int(session_day[5:7]), int(session_day[8:10]),
+        eh, em, tzinfo=IST,
+    ) + timedelta(minutes=int(eod_exp['grace_minutes']))
+    eod_events = [ev for ev in events if ev['event_type'] in ('eod_completed', 'eod_reconciled')]
+    if now_ist >= eod_deadline and not eod_events:
+        ep = record_episode(
+            db, namespace, session_day, 'eod_1615', 'eod_missed',
+            eod_deadline.isoformat(), blind_seconds=float(eod_exp['grace_minutes']) * 60,
+            base_severity='SEV1', details={'expected_at': eod_exp['expected_at'], 'deadline_at': eod_deadline.isoformat()},
+            observation_only=observation_only, recorded_at=stamp,
+        )
+        results.append({**ep, 'detector': 'eod_missed'})
+
+    # 11. Decision log reconstruction -> reconstruction_failure (SEV1)
+    for fail in verify_decision_reconstruction(all_decisions):
+        cid = str(fail.get('correlation_id') or f"seq:{fail['seq']}")
+        first_at = str(fail.get('source_at') or f'{session_day}T15:30:00+05:30')
+        emit('reconstruction_failure', cid, first_at, 'SEV1', fail)
+
+    # 12. Reference feeds HTTP 403 -> feed_http_403 (SEV3)
+    for ev in events:
+        if ev['event_type'] == 'reference_feed_error':
+            data = json.loads(ev.get('data_json') or '{}')
+            if data.get('http_status') == 403 or '403' in str(data.get('error', '')):
+                emit('feed_http_403', f"feed_http_403:{session_day}:{data.get('feed', 'nse')}", ev['source_at'], 'SEV3', data)
+
+    # 13. Install pipeline events -> install_aborted_process_active, install_rolled_back (SEV2)
+    for ev in events:
+        if ev['event_type'] in ('install_aborted_process_active', 'install_rolled_back'):
+            emit(ev['event_type'], f"{ev['event_type']}:{ev['event_id']}", ev['source_at'], 'SEV2', json.loads(ev.get('data_json') or '{}'))
+
+    # 14. Box health & Dashboard probe if supplied
+    if box_metrics:
+        if box_metrics.get('disk_free_pct') is not None and float(box_metrics['disk_free_pct']) < float(thresh['box_disk_free_min_pct']):
+            emit('box_health', f'box_health:disk:{session_day}', stamp, 'SEV2', {'kind': 'disk', 'disk_free_pct': box_metrics['disk_free_pct']})
+        if box_metrics.get('clock_drift_seconds') is not None and abs(float(box_metrics['clock_drift_seconds'])) > float(thresh['box_clock_drift_max_seconds']):
+            emit('box_health', f'box_health:clock:{session_day}', stamp, 'SEV2', {'kind': 'clock', 'clock_drift_seconds': box_metrics['clock_drift_seconds']})
+        if box_metrics.get('stale_lock'):
+            emit('box_health', f'box_health:stale_lock:{session_day}', stamp, 'SEV2', {'kind': 'stale_lock', 'lock': box_metrics['stale_lock']})
+        if box_metrics.get('venv_broken'):
+            emit('box_health', f'box_health:venv:{session_day}', stamp, 'SEV2', {'kind': 'venv'})
+    if dashboard_probe and not dashboard_probe.get('ok', True):
+        emit('dashboard_health', f'dashboard_health:{session_day}', stamp, 'SEV3', dashboard_probe)
+
+    return {
+        'namespace': namespace,
+        'session_day': session_day,
+        'trading_day': True,
+        'results': results,
+        'not_evaluable': not_evaluable,
+    }
+
+
+def build_nov9_replay_fixture(db, namespace='paper_v1'):
+    """Populate a deterministic 2026-11-09 session fixture matching the 9 Nov evidence table in Plan v3."""
+    day = '2026-11-09'
+    stmts = [
+        # 1. Monitor coverage: first check at 12:27:44, last check at 15:29:58 (no checks 09:15-12:27 -> worker_down + monitor_staleness)
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-mon-first', 'mon-1227', day, '2026-11-09T12:27:44+05:30', '2026-11-09T12:27:44+05:30', 'monitor_completed', 'INFO', 'ok', '{"check":"first"}')),
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-mon-last', 'mon-1529', day, '2026-11-09T15:29:58+05:30', '2026-11-09T15:29:58+05:30', 'monitor_completed', 'INFO', 'ok', '{"check":"last"}')),
+        # 2. Scan lock blocked gaps of ~8 min (480s) and ~16 min (960s) -> cumulative 1440s >= 600s -> escalates SEV3 to SEV2
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-lock-1', 'lock-1', day, '2026-11-09T12:50:00+05:30', '2026-11-09T12:50:00+05:30', 'lock_blocked_gap', 'WARN', 'blocked', '{"gap_seconds":480}')),
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-lock-2', 'lock-2', day, '2026-11-09T13:30:00+05:30', '2026-11-09T13:30:00+05:30', 'lock_blocked_gap', 'WARN', 'blocked', '{"gap_seconds":960}')),
+        # 3. Quotes: 30s timeout at 14:09 + recovery at 14:10 -> quote_batch_failed (recovered, SEV3)
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-quote-fail', 'q-1409', day, '2026-11-09T14:09:00+05:30', '2026-11-09T14:09:00+05:30', 'quote_batch_failed', 'WARN', 'timeout', '{"timeout_seconds":30}')),
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-quote-rec', 'q-1410', day, '2026-11-09T14:10:00+05:30', '2026-11-09T14:10:00+05:30', 'quote_batch_recovered', 'INFO', 'ok', '{}')),
+        # 4. EOD completed at 16:17 IST (within 16:15 + 20m grace)
+        ('INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+         (namespace, 'nov9-eod-ok', 'eod-1617', day, '2026-11-09T16:17:00+05:30', '2026-11-09T16:17:00+05:30', 'eod_completed', 'INFO', 'ok', '{}')),
+    ]
+    # 5. 6 unclassified worker failures -> error_taxonomy_gap x6 (SEV3)
+    for i in range(1, 7):
+        stmts.append((
+            'INSERT INTO paper_events(namespace,event_id,run_id,session_day,source_at,recorded_at,event_type,severity,outcome,data_json) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (namespace, f'nov9-unclass-{i}', f'w-err-{i}', day, f'2026-11-09T13:0{i}:00+05:30', f'2026-11-09T13:0{i}:00+05:30', 'worker_error_unclassified', 'WARN', 'unclassified_condition', '{"reason":"unclassified_condition"}'),
+        ))
+    # 6. 17 fills at 1 share (12 in Strategy 7 -> sleeve_over_limit_new_buy; MAHABANK at 86.49 implies 578 shares -> fill_sizing_anomaly; first signal created at 12:57:47 and filled at 13:17:58 -> signal_to_fill_latency)
+    for idx in range(1, 18):
+        strat = 7 if idx <= 12 else 1
+        sym = 'MAHABANK-EQ' if idx == 1 else f'SYM{idx:02d}-EQ'
+        price = 86.49 if idx == 1 else 250.0
+        sig_id = f'nov9-sig-{idx:02d}'
+        created_at = '2026-11-09T12:57:47+05:30'
+        filled_at = '2026-11-09T13:17:58+05:30' if idx == 1 else '2026-11-09T12:58:10+05:30'
+        stmts.append((
+            'INSERT INTO paper_signals(namespace,id,strategy,symbol,bar_date,side,status,reason,created_at,eligible_date) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (namespace, sig_id, strat, sym, '2026-11-08', 'BUY', 'filled', 'fixture', created_at, day),
+        ))
+        stmts.append((
+            'INSERT INTO paper_fills(namespace,signal_id,strategy,symbol,side,qty,price,quote_at,filled_at,reason,realized_pnl,cashflow,execution_path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (namespace, sig_id, strat, sym, 'BUY', 1, price, filled_at, filled_at, 'fixture_fill', 0.0, -price, 'LTP_LEGACY'),
+        ))
+    db.batch(stmts)
+
+
+def run_virtual_clock_replay(support_db, trading_db, namespace='paper_v1', session_day='2026-11-09', ticks=None, observation_only=True):
+    """Run virtual-clock replay across a session day and verify zero duplicate findings on repeat ticks."""
+    session_day = ist_session_day(session_day)
+    if ticks is None:
+        ticks = [
+            f'{session_day}T09:05:00+05:30',
+            f'{session_day}T12:30:00+05:30',
+            f'{session_day}T14:20:00+05:30',
+            f'{session_day}T15:40:00+05:30',
+            f'{session_day}T16:35:00+05:30',
+        ]
+    last_out = None
+    for tick in ticks:
+        last_out = run_v3_production_detectors(
+            support_db, namespace, session_day,
+            now_at=tick, trading_db=trading_db,
+            observation_only=observation_only,
+            check_policy_hygiene=False,
+            recorded_at=tick,
+        )
+    findings = current_findings(support_db, namespace, session_day)
+    by_sev = {'SEV1': [], 'SEV2': [], 'SEV3': [], 'SEV4': []}
+    for f in findings:
+        if f['severity'] in by_sev:
+            by_sev[f['severity']].append(f['detector'])
+    for k in by_sev:
+        by_sev[k].sort()
+    return {
+        'namespace': namespace,
+        'session_day': session_day,
+        'findings': findings,
+        'by_severity': by_sev,
+        'not_evaluable': last_out['not_evaluable'] if last_out else {},
+        'chain_failures': verify_findings_chain(support_db, namespace),
+    }
+
+
+def session_report(db, namespace, session_day, out_dir=None, write_markdown=False):
     """Build a deterministic support session report from append-only findings."""
-    session_day = str(session_day)
+    session_day = ist_session_day(session_day)
     findings = current_findings(db, namespace, session_day)
     by_detector = {}
     by_status = {s: 0 for s in VALID_STATUSES}
@@ -477,22 +1430,40 @@ def session_report(db, namespace, session_day, out_dir=None):
         'by_severity': by_severity,
         'named_causes': named_causes,
         'decision_chain_intact': by_detector.get('reconstruction_failure', 0) == 0,
+        'support_findings_chain_intact': len(verify_findings_chain(db, namespace)) == 0,
         'incomplete_lifecycle_timeout_minutes': INCOMPLETE_LIFECYCLE_MINUTES,
         'checkpoint': get_checkpoint(db, namespace),
         'findings': findings,
     }
     if out_dir is not None:
-        from pathlib import Path
         target = Path(out_dir) / f'support-{session_day}.json'
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding='utf8')
+        json_text = json.dumps(report, indent=2, sort_keys=True, default=str)
+        target.write_text(json_text, encoding='utf8')
         report['report_path'] = str(target)
+        report['report_sha256'] = hashlib.sha256(json_text.encode('utf8')).hexdigest()
+        if write_markdown:
+            md_target = Path(out_dir) / f'support-{session_day}.md'
+            lines = [
+                f'# Support Session Report — {session_day}',
+                '',
+                f"- **Namespace:** `{namespace}`",
+                f"- **Total Findings:** {report['total_findings']} (Open: {report['open_findings']})",
+                f"- **Decision Chain Intact:** `{report['decision_chain_intact']}`",
+                f"- **Support Chain Intact:** `{report['support_findings_chain_intact']}`",
+                '',
+                '## Findings by Detector',
+            ]
+            for det, cnt in sorted(by_detector.items()):
+                lines.append(f'- `{det}`: {cnt}')
+            md_target.write_text('\n'.join(lines) + '\n', encoding='utf8')
+            report['markdown_path'] = str(md_target)
     return report
 
 
 SCHEDULE_SPEC = {
-    'intraday_interval_seconds': 300,
-    'post_close_offset_minutes': 5,
+    'intraday_interval_seconds': int(SUPPORT_POLICY['schedule']['intraday_interval_seconds']),
+    'post_close_offset_minutes': int(SUPPORT_POLICY['schedule']['post_close_offset_minutes']),
     'locks_engine': False,
     'mutates_trading_state': False,
 }
@@ -504,10 +1475,11 @@ def schedule_window(t, session_bounds):
         return {'due': False, 'phase': 'closed', 'schedule': SCHEDULE_SPEC}
     start_t, end_t = session_bounds
     wall = t.time().replace(tzinfo=None)
-    post_end = (datetime.combine(t.date(), end_t).timestamp() + 3600)
-    now_ts = datetime.combine(t.date(), wall).timestamp()
-    start_ts = datetime.combine(t.date(), start_t).timestamp() - 300
-    end_ts = datetime.combine(t.date(), end_t).timestamp()
+    sched_cfg = SUPPORT_POLICY['schedule']
+    post_end = (datetime.combine(t.date(), end_t, tzinfo=IST).timestamp() + int(sched_cfg['post_close_window_seconds']))
+    now_ts = datetime.combine(t.date(), wall, tzinfo=IST).timestamp()
+    start_ts = datetime.combine(t.date(), start_t, tzinfo=IST).timestamp() - int(sched_cfg['pre_open_lead_seconds'])
+    end_ts = datetime.combine(t.date(), end_t, tzinfo=IST).timestamp()
     if start_ts <= now_ts <= end_ts:
         return {'due': True, 'phase': 'intraday', 'schedule': SCHEDULE_SPEC}
     if end_ts < now_ts <= post_end:
@@ -515,9 +1487,47 @@ def schedule_window(t, session_bounds):
     return {'due': False, 'phase': 'off_hours', 'schedule': SCHEDULE_SPEC}
 
 
+def reminder_schedule_for_batch(batch_session_day, cfg=None):
+    """Compute the at-most-3 reminder timestamps (19:30, 21:30 same day, and 07:30 on next trading day).
+
+    Never schedules on weekends or NSE holidays (Monday after a Friday batch, or day after a holiday).
+    """
+    c = CFG if cfg is None else cfg
+    d = date.fromisoformat(ist_session_day(batch_session_day))
+    if not is_trading_day(d, cfg=c):
+        return []
+    next_td = next_trading_day(d, cfg=c)
+    rem_times = SUPPORT_POLICY['schedule']['reminders']
+    return [
+        f'{d.isoformat()}T{rem_times[0]}:00+05:30',
+        f'{d.isoformat()}T{rem_times[1]}:00+05:30',
+        f'{next_td.isoformat()}T{rem_times[2]}:00+05:30',
+    ][:int(SUPPORT_POLICY['schedule']['max_reminders'])]
+
+
+def write_heartbeat(store_or_dir, namespace='paper_v1', now_at=None, source='systemd_timer'):
+    """Write local sidecar heartbeat so reports can detect blind windows even when routines pause."""
+    t = parse_ist(now_at) if now_at is not None else ist_now()
+    day = t.date().isoformat()
+    stamp = t.isoformat()
+    if hasattr(store_or_dir, 'query') and hasattr(store_or_dir, 'batch'):
+        has_hb = bool(store_or_dir.query("SELECT name FROM sqlite_master WHERE type='table' AND name='support_heartbeats'"))
+        if has_hb:
+            _write_support_only(store_or_dir, [(
+                'INSERT INTO support_heartbeats(namespace,session_day,heartbeat_at,source,status) VALUES(?,?,?,?,?)',
+                (namespace, day, stamp, source, 'ok'),
+            )])
+        return {'namespace': namespace, 'session_day': day, 'heartbeat_at': stamp, 'source': source}
+    target = Path(store_or_dir) / 'heartbeat.json'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {'namespace': namespace, 'session_day': day, 'heartbeat_at': stamp, 'source': source, 'status': 'ok'}
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf8')
+    return payload
+
+
 def run_scheduled_pass(db, namespace, session_day, session_bounds=None, now_at=None, observation_only=True, out_dir=None, notify_fn=None):
     """Execute one non-blocking support pass (checkpoint -> detectors -> report) without engine.lock."""
-    session_day = str(session_day)
+    session_day = ist_session_day(session_day)
     obs = bool(observation_only)
     window = schedule_window(now_at, session_bounds) if now_at is not None else {'due': True, 'phase': 'manual', 'schedule': SCHEDULE_SPEC}
     cp_res = consume_checkpoint(db, namespace)
@@ -552,7 +1562,3 @@ def run_cli(e, db, session_day=None):
         observation_only=obs,
         out_dir=e.ROOT / 'out',
     )
-
-
-
-

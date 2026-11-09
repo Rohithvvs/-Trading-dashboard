@@ -1,0 +1,145 @@
+{
+  "version": "support_policy_v3",
+  "updated_on_IST": "2026-11-09",
+  "timezone": "Asia/Kolkata",
+  "utc_offset_minutes": 330,
+  "reused_config_keys": [
+    "worker_stale_seconds",
+    "poll_seconds",
+    "guardian_seconds",
+    "holidays",
+    "regular_session",
+    "special_sessions",
+    "completed_bar_cutoff",
+    "support_observation_only"
+  ],
+  "reused_capital_policy_keys": [
+    "target_notional_inr",
+    "max_positions_per_sleeve",
+    "max_strategies_per_isin",
+    "strategy_count"
+  ],
+  "derived_counts_sources": {
+    "universe_csv": "universe.csv",
+    "exclusions_json": "prefilter_exclusions.json",
+    "strategy_rules_json": "strategy_rules.json"
+  },
+  "expectations": {
+    "premarket_scan": {
+      "expected_at": "08:45",
+      "grace_minutes": 15,
+      "detector": "scan_missed",
+      "severity": "SEV2"
+    },
+    "worker_active": {
+      "start_at": "09:15",
+      "end_at": "15:30",
+      "grace_seconds": 120,
+      "detector": "worker_down",
+      "severity": "SEV2"
+    },
+    "eod_reconciliation": {
+      "expected_at": "16:15",
+      "grace_minutes": 20,
+      "detector": "eod_missed",
+      "severity": "SEV1"
+    },
+    "routine_heartbeat": {
+      "grace_minutes": 30,
+      "detector": "routine_missed",
+      "severity": "SEV2"
+    }
+  },
+  "episode": {
+    "escalate_blind_seconds": 600,
+    "escalate_occurrences": 3
+  },
+  "heavy_work": {
+    "start_after": "15:35",
+    "pause_during_eod": true
+  },
+  "install": {
+    "window_start": "15:45",
+    "window_end": "08:30",
+    "evening_slot": "21:45",
+    "evening_cutoff": "21:30",
+    "morning_slot": "07:50",
+    "morning_cutoff": "07:45",
+    "must_finish_by": "08:20",
+    "morning_abort_at": "08:05",
+    "max_seconds": 900,
+    "protected_test_dates": [
+      "2026-11-11"
+    ]
+  },
+  "schedule": {
+    "pre_open_readiness": "08:30",
+    "scan_verification": "09:05",
+    "intraday_digest_hourly": [
+      "09:20",
+      "10:20",
+      "11:20",
+      "12:20",
+      "13:20",
+      "14:20",
+      "15:20"
+    ],
+    "close_check": "15:40",
+    "post_eod_report": "16:35",
+    "evening_daily_report": "16:45",
+    "reminders": [
+      "19:30",
+      "21:30",
+      "07:30"
+    ],
+    "max_reminders": 3,
+    "intraday_interval_seconds": 300,
+    "post_close_offset_minutes": 5,
+    "post_close_window_seconds": 3600,
+    "pre_open_lead_seconds": 300
+  },
+  "latency": {
+    "signal_to_fill_poll_multiple": 4
+  },
+  "thresholds": {
+    "lock_blocked_gap_seconds": 180,
+    "quote_timeout_seconds": 30,
+    "support_self_stale_seconds": 600,
+    "box_disk_free_min_pct": 10,
+    "box_clock_drift_max_seconds": 5,
+    "incomplete_lifecycle_timeout_minutes": null,
+    "feed_stale_max_hours": null,
+    "dashboard_probe_timeout_seconds": null
+  },
+  "threshold_severities": {
+    "lock_blocked_gap_seconds": "SEV2",
+    "quote_timeout_seconds": "SEV3",
+    "support_self_stale_seconds": "SEV2",
+    "box_disk_free_min_pct": "SEV2",
+    "box_clock_drift_max_seconds": "SEV2",
+    "incomplete_lifecycle_timeout_minutes": "SEV3",
+    "feed_stale_max_hours": "SEV3",
+    "dashboard_probe_timeout_seconds": "SEV3"
+  },
+  "delivery": {
+    "channel": "grok_bot_chat_only",
+    "allow_email": false,
+    "allow_slack": false,
+    "allow_external_webhooks": false
+  },
+  "verifier_rules": {
+    "safety_fail_is_veto": true,
+    "must_unanimous": true,
+    "should_min_pass": 2,
+    "max_revisions": 1,
+    "reruns_from_scratch": true,
+    "install_requires_human_approval": true,
+    "quiescence_gate": true,
+    "subset_approval_reverifies_tree_sha": true,
+    "engine_class_needs_per_change_approval": true,
+    "change_classes": [
+      "support_only",
+      "engine_instrumentation_or_locking"
+    ]
+  }
+}
