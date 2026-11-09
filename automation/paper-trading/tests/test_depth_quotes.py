@@ -40,4 +40,23 @@ class DepthQuoteFreshness(unittest.TestCase):
  def test_exit_path_uses_same_gate(self):
   # Strategy-7 stop and all SELL fills call valid_quote on the same quote dict, so stale exits are blocked too.
   stale=self.q(MIDNIGHT_TT);self.assertFalse(e.valid_quote(stale,T)[0])
+ def test_depth_feeds_upgrade_open_and_circuit_paths(self):
+  stamp=int((T-timedelta(seconds=3)).timestamp())
+  row={'ltp':105.0,'ltt':stamp,'o':100.0,'h':106.0,'l':99.0,'upper_ckt':110.0,'lower_ckt':90.0,'bids':[{'price':104.9,'volume':10,'ord':1}],'ask':[{'price':105.1,'volume':5,'ord':1}]}
+  q=self.api({'NSE:A-EQ':row}).quotes(['A-EQ'])['A-EQ']
+  self.assertEqual((q['open'],q['high'],q['low'],q['bid'],q['ask'],q['upper_band'],q['lower_band']),(100.0,106.0,99.0,104.9,105.1,110.0,90.0))
+  self.assertTrue(e.valid_quote(q,T)[0]);self.assertEqual(e.execution_reference(q),(100.0,'FEED_OPEN'))
+  self.assertEqual(e.market_guard(q)['circuit'],'NONE');self.assertFalse(e.market_guard(q)['lock_unknown'])
+ def test_depth_empty_ask_side_reads_upper_lock(self):
+  stamp=int((T-timedelta(seconds=3)).timestamp())
+  row={'ltp':110.0,'ltt':stamp,'o':101.0,'h':110.0,'l':100.0,'upper_ckt':110.0,'lower_ckt':90.0,'bids':[{'price':110.0,'volume':900,'ord':9}],'ask':[{'price':0,'volume':0,'ord':0}]}
+  q=self.api({'NSE:A-EQ':row}).quotes(['A-EQ'])['A-EQ'];self.assertEqual(e.market_guard(q)['circuit'],'UPPER')
+  row.update(bids=[{'price':0,'volume':0,'ord':0}],ask=[{'price':90.0,'volume':900,'ord':9}],ltp=90.0)
+  q=self.api({'NSE:A-EQ':row}).quotes(['A-EQ'])['A-EQ'];self.assertEqual(e.market_guard(q)['circuit'],'LOWER')
+ def test_depth_missing_ohlc_and_book_are_none_not_zero_price(self):
+  q=self.api({'NSE:A-EQ':{'ltp':50.0,'ltt':int(T.timestamp()),'o':0,'bids':[],'upper_ckt':0}}).quotes(['A-EQ'])['A-EQ']
+  self.assertIsNone(q['open']);self.assertIsNone(q['bid']);self.assertIsNone(q['ask']);self.assertNotIn('upper_band',q)
+  self.assertEqual(e.execution_reference(q),(50.0,'LTP_LEGACY'))
+ def test_live_quotes_never_use_quotes_route(self):
+  api=self.api({'NSE:A-EQ':{'ltp':1,'ltt':1}});api.quotes(['A-EQ']);self.assertNotIn('quotes',[r for r,_ in api.calls])
 if __name__=='__main__':unittest.main(verbosity=2)
