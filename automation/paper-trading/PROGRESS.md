@@ -41,7 +41,7 @@ The engine is not installed on the bot box.
 
 ## Task Group E — microstructure
 
-- [ ] Directional circuits, `pending_exit`, series, ASM/GSM, gap-aware stops
+- [x] Directional circuits, `pending_exit`, series, ASM/GSM, gap-aware stops. Upper blocks buys through the session close. Lower locks the exit until a clear session. Haircut is 1% per locked session after the first. BE/BZ blocks entries and sells use the locked 1.5× stress multiplier. A missing band is not a lock.
 
 ## Task Group F — corporate actions
 

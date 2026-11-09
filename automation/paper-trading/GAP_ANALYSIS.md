@@ -6,7 +6,7 @@ Sources: Implementation Action Plan `1D9BKMAUvEskfOUNzAav42AcKlzmuVIneNQ1C7QTP7B
 
 Locked numbers are not open for change: master ₹35,00,000, sleeve ₹5,00,000 × 7, target notional ₹50,000, 9 positions per sleeve, 3 strategies per ISIN, entry order exits then `sha256(session date, symbol, freeze_capital_v1)` then strategies 01–07.
 
-Status: Task Groups A–D are implemented on `freeze-strategies-upgrade`. The ₹10 crore ADV floor is still `pending_funnel_report`. The open path is selected in code and is not installed on the bot box. Groups E–I, acceptance, and the support agent remain.
+Status: Task Groups A–E are implemented on `freeze-strategies-upgrade`. The ₹10 crore ADV floor is still `pending_funnel_report`. Nothing is installed on the bot box. Groups F–I, acceptance, and the support agent remain. BE/BZ exit slippage uses the locked 1.5 stress multiplier because the freeze requires higher exit slippage and does not give a separate rate.
 
 ## Strategy 07 trailing stop
 

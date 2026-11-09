@@ -27,6 +27,6 @@
   "slippage_participation_multiplier_bps": 10,
   "slippage_stress_multiplier": 1.5,
   "slippage_stress": false,
-  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap", "tiered_slippage", "execution_path"],
+  "enforced": ["integer_share_rounding", "sleeve_slot_limit", "isin_cap", "sleeve_cash", "shadow_ledger", "adv_filter_placeholder", "adv_participation_cap", "tiered_slippage", "execution_path", "microstructure_guards"],
   "recorded_not_yet_enforced": []
 }

@@ -134,13 +134,16 @@ def quote_from_fyers(x,stamp=None):
   try:stamp=datetime.fromtimestamp(float(tt),IST).isoformat() if str(tt).replace('.','',1).isdigit() else datetime.fromisoformat(str(tt)).astimezone(IST).isoformat()
   except Exception:stamp=None
  official=positive_price(v.get('open_price'));indicative=positive_price(v.get('indicative_price'));cas=positive_price(v.get('reference_price'))
- row={'symbol':sym,'price':positive_price(v.get('lp')),'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES','open':official}
+ row={'symbol':sym,'price':positive_price(v.get('lp')),'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES','open':official,'high':positive_price(v.get('high_price')),'low':positive_price(v.get('low_price')),'ask':book_price(v.get('ask')),'bid':book_price(v.get('bid'))}
  if official is None and indicative is not None and cas is not None:row['auction_price']=indicative
  return row
-def execution_reference(q,stop=False):
- """Next-open orders use the official open. A polled stop keeps the observed last trade until Group H."""
+def execution_reference(q,stop=False,stop_level=None,pending_exit=False):
+ """Next-open orders use the official open. A fresh polled stop keeps the last trade unless the open has gapped through the stop. Group H still owns the stop clock."""
  if not q:return None,'LTP_LEGACY'
- if stop:return positive_price(q.get('price')),'LTP_LEGACY'
+ if stop and not pending_exit:
+  official=positive_price(q.get('open'));level=positive_price(stop_level)
+  if official is not None and level is not None and official<=level:return official,'FEED_OPEN'
+  return positive_price(q.get('price')),'LTP_LEGACY'
  official=positive_price(q.get('open'))
  if official is not None:return official,'FEED_OPEN'
  auction=positive_price(q.get('auction_price'))
@@ -148,6 +151,39 @@ def execution_reference(q,stop=False):
  first=positive_price(q.get('first_trade'))
  if first is not None:return first,'FALLBACK_OPEN'
  return positive_price(q.get('price')),'LTP_LEGACY'
+def book_price(raw):
+ if raw is None or raw=='':return None
+ try:v=float(raw)
+ except (TypeError,ValueError):return None
+ return v if math.isfinite(v) and v>=0 else None
+def market_guard(q,band=None):
+ """Upper blocks buys and lower blocks sells. A missing band is not a lock. LOCK_UNKNOWN is a flag, not a skip."""
+ q=q or {};band=band or {};series=str(q.get('series') or band.get('series') or 'EQ').upper();surveillance=str(q.get('surveillance') or band.get('surveillance') or '').upper();surveillance=surveillance if surveillance in ('ASM','GSM') else None
+ fo=bool(q.get('fo_eligible') or band.get('fo_eligible'));explicit=str(q.get('circuit') or '').upper()
+ if explicit in ('UPPER','LOWER','NONE'):state=explicit
+ else:
+  ask,bid=q.get('ask'),q.get('bid')
+  if ask==0 and isinstance(bid,(int,float)) and not isinstance(bid,bool) and bid>0:state='UPPER'
+  elif bid==0 and isinstance(ask,(int,float)) and not isinstance(ask,bool) and ask>0:state='LOWER'
+  else:
+   upper=positive_price(q.get('upper_band') if q.get('upper_band') is not None else band.get('upper_price'));lower=positive_price(q.get('lower_band') if q.get('lower_band') is not None else band.get('lower_price'));px=positive_price(q.get('price'))
+   if upper and lower and upper>lower and px:state='UPPER' if px>=upper else 'LOWER' if px<=lower else 'NONE'
+   else:state='NONE'
+ has_band=positive_price(band.get('upper_price')) is not None or q.get('upper_band') is not None
+ prices=[positive_price(q.get(k)) for k in ('open','high','low','price')]
+ unknown=state=='NONE' and not fo and not has_band and all(v is not None for v in prices) and len(set(prices))==1
+ return {'circuit':state,'series':series if series in ('EQ','BE','BZ') else 'EQ','surveillance':surveillance,'lock_unknown':unknown}
+def circuit_haircut(locked_price,locked_days):
+ """Additional 1 percent of the locked price for each locked session after the first."""
+ extra=max(0,int(locked_days)-1)
+ if extra>=100:return None
+ reduced=cap.price_paise(locked_price)*(100-extra)//100
+ if reduced<=0:return None
+ return reduced/100
+def band_for(db,symbol,day):
+ try:rows=db.query('SELECT * FROM paper_price_bands WHERE symbol=? AND trade_date=?',(symbol,day))
+ except Exception:return None
+ return rows[0] if rows else None
 def valid_quote(q,t):
  if not is_open(t):return False,'market_closed_or_unverified'
  if q and q.get('provider_status','ok')!='ok':return False,'provider_quote_error'
@@ -167,7 +203,7 @@ def decide(db,s,t,decision_type,cause,rule,payload=None,execution_path='LTP_LEGA
  correlation=s.get('id') or stable_id(decision_type,cause,s.get('strategy'),s.get('symbol'),t.isoformat())
  db.call({'action':'decision','namespace':NS,'correlation_id':correlation,'decision_type':decision_type,'strategy':s.get('strategy'),'symbol':s.get('symbol'),'signal_id':s.get('id'),'cause':cause,'rule':rule,'execution_path':execution_path,'source_at':t.isoformat(),'payload':{'strategy_version':RULE_HASH.get(str(s.get('strategy'))),**(payload or {})}})
 def _fill(db,s,q,t):
- ok,why=valid_quote(q,t);reference,path=execution_reference(q,stop=bool(s.get('stop')))
+ ok,why=valid_quote(q,t);reference,path=execution_reference(q,stop=bool(s.get('stop')),stop_level=s.get('stop_level'),pending_exit=bool(s.get('pending_exit')));guard=market_guard(q,band_for(db,s['symbol'],t.date().isoformat()) if q else None)
  if not ok:
   decide(db,s,t,'SKIP',why,'quote_not_fillable',{'price':q.get('price') if q else None},path);return {'filled':False,'reason':why,'execution_path':path}
  if s['eligible_date']>t.date().isoformat():
@@ -185,8 +221,8 @@ def _fill(db,s,q,t):
    log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=reference,target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
    decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':reference,quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']},path)
    return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':path}
- r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':reference,'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':path,'strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
- if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH','ADV_FILTER_SKIP','ADV_PARTICIPATION_CAP'):
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':reference,'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':path,'strategy_version':RULE_HASH.get(str(s['strategy'])),'circuit':guard['circuit'],'series':guard['series'],'surveillance':guard['surveillance'],'lock_unknown':guard['lock_unknown']});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
+ if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH','ADV_FILTER_SKIP','ADV_PARTICIPATION_CAP','CIRCUIT_LOCKED','SERIES_TRANSITION_BE_BZ','ASM_GSM_RESTRICTION'):
   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause=r['reason'],price=reference,open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],max_strategies_per_isin=cap.POLICY['max_strategies_per_isin'],quantity=0)
  if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
  return r
@@ -356,9 +392,11 @@ def _monitor(db,api):
  for p in positions:
   q=quotes.get(p['symbol']);ok,why=valid_quote(q,t)
   position_rows.append({'strategy':p['strategy'],'symbol':p['symbol'],'quantity':p['qty'],'price':q.get('price') if q else None,'accepted':ok,'reason':why,'stop_defined':p['strategy']==7,'target_defined':False,'threshold':.9*p['high_water'] if p['strategy']==7 else None,'high_water':p['high_water'],'trigger':bool(ok and p['strategy']==7 and q['price']<=.9*p['high_water'])})
-  if ok and p['strategy']==7 and q['price']<=.9*p['high_water']:
-   al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=p['symbol'],price=q['price'],quote_at=q['quote_at'],threshold=.9*p['high_water'],reason='observed_stop_crossing',target_defined=False)
-   actions.append({'id':stable_id(7,p['symbol'],p['entry_at'],'stop'),'strategy':7,'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True})
+  level=.9*p['high_water'] if p['strategy']==7 else None;triggered=bool(ok and level is not None and q['price']<=level);carried=bool(p.get('pending_exit'))
+  if ok and triggered and not carried:
+   al.emit(sys.modules[__name__],db,'risk_hit',strategy=7,symbol=p['symbol'],price=q['price'],quote_at=q['quote_at'],threshold=level,reason='observed_stop_crossing',target_defined=False)
+  if ok and (triggered or carried):
+   actions.append({'id':stable_id(p['strategy'],p['symbol'],p['entry_at'],'pending' if carried else 'stop'),'strategy':p['strategy'],'symbol':p['symbol'],'side':'SELL','bar_date':t.date().isoformat(),'eligible_date':t.date().isoformat(),'reason':'pending_exit_carry' if carried else 'observed_LTP_below_close_highwater_stop','expected_entry_at':p['entry_at'],'stop':True,'pending_exit':carried,'stop_level':level})
  for i in range(0,len(position_rows),50):al.emit(sys.modules[__name__],db,'position_checks',rows=position_rows[i:i+50],count=len(position_rows[i:i+50]))
  actions+=signals;day=t.date().isoformat();actions.sort(key=lambda s:entry_priority(day,s))
  for s in actions:
@@ -368,9 +406,14 @@ def _monitor(db,api):
   if r['filled']:fills+=1;used.add(key)
  # Entry-day stop cannot be hit by the exact same entry LTP; it is checked on subsequent fresh polls.
  st=[];t=now()
- for sym,q in quotes.items():
-  ok,_=valid_quote(q,t)
-  if ok:st.append(('UPDATE paper_positions SET mark_price=?,mark_at=?,updated_at=? WHERE namespace=? AND symbol=? AND qty>0',(q['price'],q['quote_at'],t.isoformat(),NS,sym)))
+ for p in db.positions():
+  q=quotes.get(p['symbol']);ok,_=valid_quote(q,t)
+  if not ok:continue
+  price=q['price'];guard=market_guard(q,band_for(db,p['symbol'],t.date().isoformat()))
+  if p.get('pending_exit') and guard['circuit']=='LOWER':
+   days=db.query('SELECT COUNT(*) AS n FROM paper_circuit_locks WHERE namespace=? AND strategy=? AND symbol=?',(NS,p['strategy'],p['symbol']))[0]['n'];marked=circuit_haircut(price,days)
+   if marked is not None:price=marked
+  st.append(('UPDATE paper_positions SET mark_price=?,mark_at=?,updated_at=? WHERE namespace=? AND strategy=? AND symbol=?',(price,q['quote_at'],t.isoformat(),NS,p['strategy'],p['symbol'])))
  db.batch(st);report={'status':'ok','fresh_quotes':sum(valid_quote(q,t)[0] for q in quotes.values()),'quotes':len(quotes),'fills':fills,'at_IST':t.isoformat()};db.run('monitor','ok',**report);return report
 
 def monitor(db,api):
@@ -413,6 +456,9 @@ def migrate(db):
  cols=db.query('PRAGMA table_info(paper_fills)')
  if cols and not any(c.get('name')=='execution_path' for c in cols):
   db.batch([("ALTER TABLE paper_fills ADD COLUMN execution_path TEXT NOT NULL DEFAULT 'LTP_LEGACY'",())])
+ pos=db.query('PRAGMA table_info(paper_positions)')
+ if pos and not any(c.get('name')=='pending_exit' for c in pos):
+  db.batch([('ALTER TABLE paper_positions ADD COLUMN pending_exit INTEGER NOT NULL DEFAULT 0',()),('ALTER TABLE paper_positions ADD COLUMN pending_exit_since TEXT',())])
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
  parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()

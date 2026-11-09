@@ -206,6 +206,46 @@ class PaperTests(unittest.TestCase):
   self.assertFalse(skipped['filled']);self.assertEqual(skipped['execution_path'],'LTP_LEGACY')
   self.assertEqual(self.db.query('SELECT execution_path FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,stop['id']))[0]['execution_path'],'LTP_LEGACY')
   self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_microstructure_blocks_the_locked_side_and_carries_the_exit(self):
+  self.assertEqual(e.circuit_haircut(80,1),80);self.assertEqual(round(e.circuit_haircut(80,2),2),79.2)
+  self.assertEqual(e.market_guard({'price':100,'open':100,'high':100,'low':100})['lock_unknown'],True)
+  self.assertFalse(e.market_guard({'price':100,'open':100,'high':100,'low':100,'fo_eligible':True})['lock_unknown'])
+  self.assertEqual(e.market_guard({'ask':0,'bid':1,'price':100})['circuit'],'UPPER')
+  self.assertEqual(e.market_guard({'ask':1,'bid':0,'price':100})['circuit'],'LOWER')
+  blocked=self.signal();first=e.fill(self.db,blocked,{**self.quote(),'circuit':'UPPER'},T);self.assertFalse(first['filled']);self.assertEqual(first['reason'],'CIRCUIT_LOCKED')
+  second=e.fill(self.db,blocked,self.quote(),T);self.assertFalse(second['filled']);self.assertEqual(second['reason'],'CIRCUIT_LOCKED')
+  self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,blocked['id']))[0]['status'],'pending')
+  later=datetime(2026,11,11,10,tzinfo=e.IST);e.now=lambda:later
+  expired=e.fill(self.db,blocked,{'symbol':'RELIANCE-EQ','price':100,'quote_at':later.isoformat()},later)
+  self.assertEqual(expired['reason'],'expired_entry_signal');e.now=lambda:T
+  bought=self.signal(symbol='TCS-EQ');self.assertTrue(e.fill(self.db,bought,{**self.quote(),'symbol':'TCS-EQ','circuit':'LOWER'},T)['filled'])
+  be=e.fill(self.db,self.signal(symbol='INFY-EQ'),{**self.quote(),'symbol':'INFY-EQ','series':'BE'},T);self.assertEqual(be['reason'],'SERIES_TRANSITION_BE_BZ')
+  asm=e.fill(self.db,self.signal(symbol='HDFCBANK-EQ'),{**self.quote(),'symbol':'HDFCBANK-EQ','surveillance':'ASM'},T);self.assertEqual(asm['reason'],'ASM_GSM_RESTRICTION')
+  self.db.batch([('INSERT INTO paper_price_bands(symbol,trade_date,upper_price,lower_price,series,surveillance,fo_eligible,source) VALUES(?,?,?,?,?,?,?,?)',('ICICIBANK-EQ',T.date().isoformat(),100,90,'EQ',None,0,'TEST_BAND'))])
+  banded=e.fill(self.db,self.signal(symbol='ICICIBANK-EQ'),{**self.quote(),'symbol':'ICICIBANK-EQ'},T);self.assertEqual(banded['reason'],'CIRCUIT_LOCKED')
+  flat=e.fill(self.db,self.signal(symbol='WIPRO-EQ'),{'symbol':'WIPRO-EQ','price':100,'open':100,'high':100,'low':100,'quote_at':T.isoformat()},T)
+  self.assertTrue(flat['filled']);payload=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='ENTRY' AND symbol='WIPRO-EQ'",(e.NS,))[0]['payload_json']);self.assertTrue(payload['lock_unknown'])
+  sbin=e.fill(self.db,self.signal(symbol='SBIN-EQ'),{**self.quote(),'symbol':'SBIN-EQ'},T);axis=e.fill(self.db,self.signal(symbol='AXISBANK-EQ'),{**self.quote(),'symbol':'AXISBANK-EQ'},T)
+  self.assertTrue(sbin['filled'] and axis['filled'])
+  be_exit=e.fill(self.db,self.signal('SELL',symbol='SBIN-EQ'),{**self.quote(110),'symbol':'SBIN-EQ','series':'BE'},T)
+  eq_exit=e.fill(self.db,self.signal('SELL',symbol='AXISBANK-EQ'),{**self.quote(110),'symbol':'AXISBANK-EQ'},T)
+  self.assertTrue(be_exit['filled'] and eq_exit['filled']);self.assertLess(be_exit['price'],eq_exit['price'])
+  be_payload=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT' AND symbol='SBIN-EQ'",(e.NS,))[0]['payload_json']);self.assertTrue(be_payload['series_exit_stress'])
+  locked=e.fill(self.db,self.signal('SELL',symbol='TCS-EQ'),{**self.quote(80),'symbol':'TCS-EQ','circuit':'LOWER'},T)
+  self.assertEqual(locked['reason'],'CIRCUIT_LOCKED');self.assertEqual(self.db.positions()[0]['symbol'] if False else self.db.query('SELECT pending_exit FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'TCS-EQ'))[0]['pending_exit'],1)
+  class Feed:
+   def quotes(_self,symbols):return {sym:{'symbol':sym,'price':80,'quote_at':T.isoformat(),'circuit':'LOWER'} for sym in symbols}
+  e.monitor(self.db,Feed());self.assertEqual(self.db.query('SELECT mark_price FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'TCS-EQ'))[0]['mark_price'],80)
+  self.db.batch([('INSERT INTO paper_circuit_locks(namespace,strategy,symbol,trade_date,direction,locked_price,recorded_at) VALUES(?,?,?,?,?,?,?)',(e.NS,1,'TCS-EQ','2026-11-06','LOWER',80,T.isoformat()))])
+  e.monitor(self.db,Feed());self.assertEqual(round(self.db.query('SELECT mark_price FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'TCS-EQ'))[0]['mark_price'],2),79.2)
+  cleared=e.fill(self.db,self.signal('SELL',symbol='TCS-EQ'),{**self.quote(80),'symbol':'TCS-EQ'},T);self.assertTrue(cleared['filled']);self.assertFalse(self.db.query('SELECT 1 FROM paper_positions WHERE namespace=? AND symbol=? AND qty>0',(e.NS,'TCS-EQ')))
+ def test_gap_stop_fills_the_open(self):
+  self.assertTrue(e.fill(self.db,self.signal(strategy=7),self.quote(),T)['filled'])
+  class Feed:
+   def quotes(_,symbols):return {'RELIANCE-EQ':{'symbol':'RELIANCE-EQ','price':88,'open':80,'quote_at':T.isoformat()}}
+  self.assertEqual(e.monitor(self.db,Feed())['fills'],1)
+  exit_row=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]['payload_json'])
+  self.assertEqual(exit_row['reference_price'],80);self.assertEqual(self.db.query("SELECT execution_path FROM paper_fills WHERE namespace=? AND side='SELL'",(e.NS,))[0]['execution_path'],'FEED_OPEN');self.assertLess(exit_row['price'],80)
  def test_closed_monitor_no_quotes(self):
   e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST)
   class Feed:
