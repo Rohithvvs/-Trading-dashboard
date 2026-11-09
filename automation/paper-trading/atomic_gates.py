@@ -19,22 +19,29 @@ Implements Section 4, A5, A8.6, B3, and B5 of the Definitive Coding-Ready Plan:
 - Track C probation: longer for trend than fast swing; tolerance band calibrated to ~2*sigma of
   historical tracking error
 """
-import math, uuid
+import math
 from datetime import datetime, timezone
 import numpy as np
 
 import adaptive_engine as ae
 import adaptive_logging as alog
+import adaptive_policy as apol
 import residualized_check as rc
 import trial_counting as tc
 
-PLACEBO_RUNS_M = 250
-PLACEBO_PERCENTILE = 90.0
-PLATEAU_RETENTION_MIN = 0.75
-MAX_DD_MULTIPLIER = 1.10
-MAX_SINGLE_TRADE_CONTRIBUTION = 0.35
-DEFAULT_TRACK_C_SUPERIORITY_BPS = 0.35  # +0.35 bps/day stated in Section 4 / A5
-PROBATION_SIGMA_MULTIPLIER = 2.0
+AP = apol.POLICY
+PLACEBO_RUNS_M = AP['placebo_runs']
+PLACEBO_PERCENTILE = AP['placebo_percentile']
+PLATEAU_RETENTION_MIN = AP['plateau_retention_min']
+MAX_DD_MULTIPLIER = AP['max_dd_multiplier']
+MAX_SINGLE_TRADE_CONTRIBUTION = AP['max_single_trade_share']
+DEFAULT_TRACK_C_SUPERIORITY_BPS = AP['track_c_superiority_bps_per_day']  # plan example: +0.35 bps/day
+PROBATION_SIGMA_MULTIPLIER = AP['probation_sigma_multiplier']
+MICROSTRUCTURE_LOCKS = (
+    'slippage_1_5x_liquidity_scaled', 'circuit_carry_forward', 'gap_aware_stops',
+    'indicator_back_adjustment', 'eq_only_new_entries', 'higher_slippage_be_bz',
+)
+LIVE_TRACK_C_STATUSES = ('champion', 'probation')
 
 
 def _utc_now():
@@ -58,7 +65,7 @@ def evaluate_gate1_sample_and_discordant(
     warm_start_end_date,
     min_discordant_trades=ae.MIN_DISCORDANT_TRADES,
     min_distinct_weeks=ae.MIN_DISTINCT_ENTRY_WEEKS,
-    min_total_trades=10,
+    min_total_trades=AP['gate1_min_total_trades'],
 ):
     """Gate 1: Sample size + >= 10 new discordant trades (inherited counted separately) + distinct entry weeks."""
     disc = ae.classify_discordant_trades(var_trades, base_trades, warm_start_end_date=warm_start_end_date)
@@ -86,7 +93,7 @@ def evaluate_gate3_guardrails(
     var_trades,
     max_dd_multiplier=MAX_DD_MULTIPLIER,
     max_single_trade_share=MAX_SINGLE_TRADE_CONTRIBUTION,
-    min_dd_baseline_floor=0.005,
+    min_dd_baseline_floor=AP['gate3_min_dd_baseline_floor'],
 ):
     """Gate 3: Guardrails (DD <= 1.10x baseline DD, single-trade contribution <= 35%)."""
     dd_var = compute_max_drawdown_from_returns(r_var)
@@ -116,7 +123,7 @@ def evaluate_gate5_stationarity(d_t):
     """Gate 5: Stationarity of active returns across first/second half and lag-1 autoregression (< 0.95)."""
     d = np.asarray(d_t, dtype=float)
     n = len(d)
-    if n < 6:
+    if n < AP['gate5_min_observations']:
         return {'passed': False, 'reason': 'insufficient_length_for_stationarity', 'n': n}
     mid = n // 2
     first_half_mean = float(np.mean(d[:mid]))
@@ -127,11 +134,11 @@ def evaluate_gate5_stationarity(d_t):
     centered = d - overall_mean
     denom = float(np.dot(centered, centered))
     rho1 = float(np.dot(centered[1:], centered[:-1]) / denom) if denom > 1e-16 else 0.0
-    non_unit_root = abs(rho1) < 0.95
+    non_unit_root = abs(rho1) < AP['gate5_max_abs_lag1_autocorr']
 
     # Both halves must not collapse (neither half catastrophic relative to overall active edge)
     halves_consistent = (first_half_mean > 0.0 and second_half_mean > 0.0) or (
-        overall_mean > 0.0 and min(first_half_mean, second_half_mean) >= -0.25 * abs(overall_mean)
+        overall_mean > 0.0 and min(first_half_mean, second_half_mean) >= AP['gate5_min_half_mean_vs_overall'] * abs(overall_mean)
     )
     passed = bool(overall_mean > 0.0 and non_unit_root and halves_consistent)
     return {
@@ -188,22 +195,19 @@ def evaluate_gate7_microstructure_stress(
     """
     d_stress = rc.compute_paired_active_returns(stressed_r_var, r_base)
     stress_mean = float(np.mean(d_stress))
-    checks = {
-        'slippage_1_5x_liquidity_scaled': True,
-        'circuit_carry_forward': True,
-        'gap_aware_stops': True,
-        'indicator_back_adjustment': True,
-        'eq_only_new_entries': True,
-        'higher_slippage_be_bz': True,
-        **(microstructure_checks or {}),
-    }
-    all_locks_active = all(bool(v) for v in checks.values())
+    # Each lock must be evidenced by the stressed simulation run (simulate_track_window()['microstructure_locks']).
+    # A lock that is not reported is treated as NOT verified; nothing is assumed True.
+    supplied = dict(microstructure_checks or {})
+    checks = {k: bool(supplied.get(k, False)) for k in MICROSTRUCTURE_LOCKS}
+    missing = [k for k in MICROSTRUCTURE_LOCKS if k not in supplied]
+    all_locks_active = all(checks.values())
     passed = bool(stress_mean > 0.0 and all_locks_active)
     return {
         'passed': passed,
         'stressed_d_t_mean': stress_mean,
         'stressed_d_t_mean_bps': stress_mean * 10_000.0,
         'locks_verified': checks,
+        'locks_missing_evidence': missing,
         'all_locks_active': all_locks_active,
     }
 
@@ -215,7 +219,7 @@ def evaluate_gate8_placebo(
     candidate_pool_discordant_components=None,
     m_runs=PLACEBO_RUNS_M,
     percentile=PLACEBO_PERCENTILE,
-    base_seed=20261109,
+    base_seed=AP['base_seed'],
 ):
     """Gate 8: Placebo M = 250 seeded runs.
 
@@ -251,7 +255,7 @@ def evaluate_gate8_placebo(
     seeds_used = []
 
     for run_idx in range(m):
-        seed_i = int(base_seed) + run_idx * 1009
+        seed_i = int(base_seed) + run_idx * AP['placebo_seed_stride']
         seeds_used.append(seed_i)
         rng = np.random.default_rng(seed_i)
 
@@ -287,7 +291,7 @@ def evaluate_gate8_placebo(
     }
 
 
-def evaluate_gate9_minimum_effect_size(d_t, min_effect_size_daily=0.00020):
+def evaluate_gate9_minimum_effect_size(d_t, min_effect_size_daily=AP['gate9_min_effect_size_daily']):
     """Gate 9: Minimum effect size (mean daily active return clears minimum actionable edge, e.g., >= 2.0 bps/day)."""
     mean_d = float(np.mean(np.asarray(d_t, dtype=float)))
     req = float(min_effect_size_daily)
@@ -306,6 +310,7 @@ def evaluate_incremental_superiority_vs_track_c(
     r_champion,
     stated_threshold_bps=DEFAULT_TRACK_C_SUPERIORITY_BPS,
     existing_candidate_records=None,
+    challenger_spawn_id=None,
 ):
     """Evaluate incremental superiority of Track B challenger vs current Track C champion.
 
@@ -318,7 +323,7 @@ def evaluate_incremental_superiority_vs_track_c(
     clears_threshold = hac['mean'] >= threshold_daily - 1e-12
 
     trial_record = {
-        'spawn_id': f'track_c_cmp_{uuid.uuid4().hex[:12]}',
+        'spawn_id': f'track_c_cmp_{challenger_spawn_id or alog.compute_hash(list(map(float, d_c)))[:12]}',
         'candidate_kind': 'TRACK_C_COMPARISON',
         'eligible_for_selection': 1,
     }
@@ -350,11 +355,14 @@ def evaluate_track_c_probation(
     """Evaluate Track C probation: longer window for Trend than Fast Swing; tolerance band ~2*sigma of tracking error."""
     s = int(strategy)
     tier = ae.strategy_tier(s)
-    required_days = 60 if tier == 'TREND' else 30
+    required_days = AP['probation_days_trend'] if tier == 'TREND' else AP['probation_days_fast_swing']
 
     hist = np.asarray(historical_d_t_for_sigma, dtype=float)
     realized = np.asarray(realized_d_t, dtype=float)
-    hist_te = float(np.std(hist, ddof=1)) if len(hist) > 1 else 0.002
+    if len(hist) < 2:
+        # No silent default tracking error: the tolerance band must be calibrated on real history.
+        raise ValueError('probation_requires_at_least_2_historical_d_t_observations')
+    hist_te = float(np.std(hist, ddof=1))
     days_monitored = len(realized)
     cum_active = float(np.sum(realized)) if days_monitored > 0 else 0.0
     mean_active = float(np.mean(realized)) if days_monitored > 0 else 0.0
@@ -440,12 +448,34 @@ def evaluate_all_atomic_gates(
     candidate_pool_discordant_components=None,
     r_track_c=None,
     track_c_threshold_bps=DEFAULT_TRACK_C_SUPERIORITY_BPS,
-    cost_slippage_hurdle=0.0001,
-    min_effect_size_daily=0.0002,
-    placebo_seed=20261109,
+    cost_slippage_hurdle=AP['gate2_cost_slippage_hurdle_daily'],
+    min_effect_size_daily=AP['gate9_min_effect_size_daily'],
+    placebo_seed=AP['base_seed'],
     observation_only=True,
+    microstructure_checks=None,
 ):
-    """Evaluate all 9 Atomic Gates (plus incremental superiority vs Track C when Track C exists) on the final decision day."""
+    """Evaluate all 9 Atomic Gates (plus incremental superiority vs Track C when Track C exists) on the final decision day.
+
+    Gates run once: the spawn must have been released by evaluate_stopping_and_window() (status EVALUATING) and must
+    not already have a gate evaluation. If a live Track C champion exists for the strategy, r_track_c is mandatory and
+    the comparison is counted as an extra eligible trial in K_cand before Gate 2's effective critical value is computed.
+    """
+    sp_rows = db.query('SELECT track,status FROM adaptive_spawns WHERE namespace=? AND spawn_id=?', (namespace, str(spawn_id)))
+    if not sp_rows:
+        raise KeyError(f'spawn_not_found:{spawn_id}')
+    if sp_rows[0]['status'] != 'EVALUATING':
+        raise PermissionError(f"gates_require_completed_window_status_EVALUATING_got_{sp_rows[0]['status']}")
+    if db.query('SELECT 1 AS x FROM adaptive_gate_evaluations WHERE namespace=? AND spawn_id=? LIMIT 1', (namespace, str(spawn_id))):
+        raise PermissionError(f'gates_already_evaluated_once:{spawn_id}')
+    spawn_track = sp_rows[0]['track']
+    live_champion = db.query(
+        f"SELECT spawn_id FROM adaptive_tracks WHERE namespace=? AND track='C' AND strategy=? AND status IN ({','.join('?' * len(LIVE_TRACK_C_STATUSES))}) AND spawn_id<>?",
+        (namespace, int(strategy), *LIVE_TRACK_C_STATUSES, str(spawn_id)),
+    )
+    if live_champion and r_track_c is None:
+        raise ValueError(f"track_c_champion_exists_incremental_superiority_required:{live_champion[0]['spawn_id']}")
+    k_cand_for_gate2 = int(k_cand) + (1 if r_track_c is not None else 0)
+
     d_t = rc.compute_paired_active_returns(r_var, r_base)
 
     g1 = evaluate_gate1_sample_and_discordant(var_trades, base_trades, warm_start_end_date=warm_start_end_date)
@@ -453,7 +483,7 @@ def evaluate_all_atomic_gates(
         r_var=r_var,
         r_base=r_base,
         index_returns=index_returns,
-        k_cand=k_cand,
+        k_cand=k_cand_for_gate2,
         rho_bar=rho_bar,
         cost_slippage_hurdle=cost_slippage_hurdle,
     )
@@ -463,7 +493,7 @@ def evaluate_all_atomic_gates(
         candidate_improvement=g2_g4['d_t_mean'],
         neighbor_improvements=neighbor_improvements,
     )
-    g7 = evaluate_gate7_microstructure_stress(stressed_r_var=stressed_r_var, r_base=r_base)
+    g7 = evaluate_gate7_microstructure_stress(stressed_r_var=stressed_r_var, r_base=r_base, microstructure_checks=microstructure_checks)
     g8 = evaluate_gate8_placebo(
         r_var=r_var,
         r_base=r_base,
@@ -479,6 +509,7 @@ def evaluate_all_atomic_gates(
             r_challenger=r_var,
             r_champion=r_track_c,
             stated_threshold_bps=track_c_threshold_bps,
+            challenger_spawn_id=str(spawn_id),
         )
         track_c_ok = track_c_cmp['passed']
 
@@ -510,6 +541,9 @@ def evaluate_all_atomic_gates(
         'gate_8': g8,
         'gate_9': g9,
         'track_c_comparison': track_c_cmp,
+        'track_c_champion_present': bool(live_champion),
+        'k_cand_supplied': int(k_cand),
+        'k_cand_including_track_c_comparison': k_cand_for_gate2,
     }
     dhash = alog.compute_hash(full_details)
 
@@ -542,7 +576,7 @@ def evaluate_all_atomic_gates(
 
     alog.append_log(
         db, namespace, correlation_id=str(spawn_id), spawn_id=str(spawn_id),
-        track='B', strategy=int(strategy),
+        track=spawn_track, strategy=int(strategy),
         category='GATE_EVALUATION',
         decision_type='GATE_PASS' if overall_passed else 'GATE_FAIL',
         named_cause='all_atomic_gates_passed' if overall_passed else 'atomic_gate_failed',

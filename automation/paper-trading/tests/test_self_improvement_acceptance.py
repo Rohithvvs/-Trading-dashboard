@@ -100,6 +100,8 @@ class TestSelfImprovementAcceptance(unittest.TestCase):
         var_trades, base_trades = _build_trades(n_new=12, n_inherited=3)
         mean_d = float(np.mean(r_var - r_base))
 
+        ready = ae.evaluate_stopping_and_window(self.db, ns, sp_fast['spawn_id'], days_elapsed=45, new_discordant_trades=12, distinct_entry_weeks=6)
+        self.assertTrue(ready['ready_for_final_gate_evaluation'])
         gate_res = ag.evaluate_all_atomic_gates(
             self.db, ns, spawn_id=sp_fast['spawn_id'], strategy=3, decision_day='2025-08-29',
             r_var=r_var, r_base=r_base, index_returns=r_idx,
@@ -108,6 +110,7 @@ class TestSelfImprovementAcceptance(unittest.TestCase):
             neighbor_improvements=[mean_d * 0.85, mean_d * 0.82],
             stressed_r_var=stressed_r_var,
             k_cand=2, rho_bar=0.4, observation_only=True,
+            microstructure_checks=dict.fromkeys(ag.MICROSTRUCTURE_LOCKS, True),
         )
         self.assertTrue(gate_res['overall_passed'])
         self.assertTrue(gate_res['details']['gate_2_and_4']['residualized_check']['passed'])

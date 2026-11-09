@@ -11,12 +11,14 @@ import pandas as pd
 
 import adaptive_engine as ae
 import adaptive_logging as alog
+import adaptive_policy as apol
 import pit_archive as pit
 import prefilter as pf
 import residualized_check as rc
 import trial_counting as tc
 
-POWER_FLOOR = 0.30
+AP = apol.POLICY
+POWER_FLOOR = AP['power_floor']
 OLDEST_PARTITION_NAME = 'OLDEST_CALIBRATION_PARTITION'
 
 
@@ -54,8 +56,8 @@ def estimate_power_at_injected_edge(
     window_days,
     k_eff=1.0,
     alpha=tc.DEFAULT_ALPHA,
-    n_sims=400,
-    seed=20261109,
+    n_sims=AP['calibration_n_sims'],
+    seed=AP['base_seed'],
 ):
     """Estimate statistical power when injecting smallest_actionable_edge into centered real d_t."""
     edge = float(smallest_actionable_edge)
@@ -77,7 +79,7 @@ def estimate_power_at_injected_edge(
     centered = d - np.mean(d)
     rng = np.random.default_rng(int(seed))
     detections = 0
-    sims = max(50, int(n_sims))
+    sims = max(AP['calibration_min_sims'], int(n_sims))
     for _ in range(sims):
         idx = rng.integers(0, len(centered), size=n)
         synth_d = centered[idx] + edge
@@ -107,7 +109,9 @@ def tune_thresholds_on_partition(partition_name, ordered_partitions, candidate_t
         raise PermissionError(f'threshold_tuning_restricted_to_oldest_partition:got_{partition_name}_expected_{oldest}')
 
     d = np.asarray(real_d_t, dtype=float)
-    sigma = float(np.std(d, ddof=1)) if len(d) > 1 else 0.001
+    if len(d) < 2:
+        raise ValueError('threshold_tuning_requires_at_least_2_d_t_observations')
+    sigma = float(np.std(d, ddof=1))
     best = None
     for thresh in candidate_thresholds:
         val = float(thresh)
@@ -135,7 +139,7 @@ def run_calibration_go_no_go(
     lengthen_on_low_power=False,
     calibration_id=None,
     correlation_id=None,
-    seed=20261109,
+    seed=AP['base_seed'],
 ):
     """Run the calibration protocol and enforce the ~30% power floor go/no-go rule."""
     s = int(strategy)
@@ -171,6 +175,10 @@ def run_calibration_go_no_go(
         recommended_window_days = w_days
 
     cid = str(calibration_id or f'cal_{s}_{uuid.uuid4().hex[:12]}')
+    prior = db.query('SELECT holdout_touched,vault_spent FROM adaptive_calibration_runs WHERE namespace=? AND calibration_id=?', (namespace, cid))
+    if prior and (int(prior[0]['holdout_touched']) or int(prior[0]['vault_spent'])):
+        # Re-running a calibration id must never reset its holdout-vault flags.
+        raise PermissionError(f'calibration_already_touched_holdout:{cid}')
     corr = str(correlation_id or cid)
     stamp = _utc_now()
     details = {
@@ -272,7 +280,7 @@ def touch_holdout_vault_once(db, namespace, vault_id, calibration_id, holdout_pa
     }
 
 
-def evaluate_meta_kill_switch(db, namespace, strategy, champion_r_series, track_a_r_series, min_days=20, max_negative_t=-1.0, spawn_id=None):
+def evaluate_meta_kill_switch(db, namespace, strategy, champion_r_series, track_a_r_series, min_days=AP['meta_kill_min_days'], max_negative_t=AP['meta_kill_max_t'], spawn_id=None):
     """Trigger the meta-kill switch if Track C champions fail to beat Track A baseline over time."""
     s = int(strategy)
     d_t = rc.compute_paired_active_returns(champion_r_series, track_a_r_series)

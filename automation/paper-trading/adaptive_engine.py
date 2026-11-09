@@ -15,12 +15,14 @@ Implements:
   gap-aware stops, EQ-only new entries, 1.5x exit slippage on BE/BZ
 """
 import copy, hashlib, json, math
+from fractions import Fraction
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
 import adaptive_logging as alog
+import adaptive_policy as apol
 import capital as cap
 import pit_archive as pit
 import strategy_indicators as si_base
@@ -29,25 +31,35 @@ SLEEVE_CAPITAL_PAISE = cap.POLICY['sleeve_capital_inr'] * 100  # 50,000,000 pais
 TARGET_NOTIONAL_INR = cap.POLICY['target_notional_inr']        # ₹50,000
 MAX_POSITIONS_PER_SLEEVE = cap.POLICY['max_positions_per_sleeve']  # 9
 
-MAX_TRACK_B_CHALLENGERS = 3
-MAX_TRACK_C_CHAMPIONS = 1
+AP = apol.POLICY
+CAPITAL_POLICY = cap.POLICY                      # Track A frozen capital policy (read-only)
+CHARGE_RATES = apol.read_json('charge_rates.json')  # Track A frozen charge table (read-only)
+ENGINE_CONFIG = apol.read_json('config.json')       # Track A engine config (read-only)
+ADV_EXCLUDED_SESSIONS = frozenset(str(d) for d in (ENGINE_CONFIG.get('indicator_excluded_sessions') or {}))
 
-FAST_SWING_STRATEGIES = frozenset({3, 5})
-TREND_STRATEGIES = frozenset({1, 2, 4, 6, 7})
+MAX_TRACK_B_CHALLENGERS = AP['max_track_b_challengers']
+MAX_TRACK_C_CHAMPIONS = AP['max_track_c_champions']
 
-FAST_SWING_WARM_START_DAYS = 60
-TREND_WARM_START_MIN_DAYS = 100
-TREND_WARM_START_MAX_DAYS = 120
-TREND_WARM_START_DEFAULT_DAYS = 110
+FAST_SWING_STRATEGIES = frozenset(AP['fast_swing_strategies'])
+TREND_STRATEGIES = frozenset(AP['trend_strategies'])
 
-FAST_SWING_TARGET_WINDOW_DAYS = 45
-TREND_TARGET_WINDOW_DAYS = 75
-EXTENSION_DAYS = 15
+FAST_SWING_WARM_START_DAYS = AP['fast_swing_warm_start_days']
+TREND_WARM_START_MIN_DAYS = AP['trend_warm_start_min_days']
+TREND_WARM_START_MAX_DAYS = AP['trend_warm_start_max_days']
+TREND_WARM_START_DEFAULT_DAYS = AP['trend_warm_start_default_days']
+
+FAST_SWING_TARGET_WINDOW_DAYS = AP['fast_swing_target_window_days']
+TREND_TARGET_WINDOW_DAYS = AP['trend_target_window_days']
+EXTENSION_DAYS = AP['extension_days']
 ALLOWED_EXTENSION_REASONS = frozenset({'trade_count_under_floor', 'preregistered_regime_flag'})
+TERMINAL_SPAWN_STATUSES = frozenset({'INCONCLUSIVE', 'PASSED', 'FAILED', 'PROMOTED', 'OBSERVATION_ONLY', 'RETIRED'})
 
-MIN_DISCORDANT_TRADES = 10
-MIN_DISTINCT_ENTRY_WEEKS = 3
+MIN_DISCORDANT_TRADES = AP['min_new_discordant_trades']
+MIN_DISTINCT_ENTRY_WEEKS = AP['min_distinct_entry_weeks']
 
+# Frozen Track A indicator parameters (strategy_rules.json / strategy_indicators.py). These are the
+# frozen baseline definitions, not tunable thresholds; tests assert parity with strategy_indicators.py.
+# Strategy 07 trail ratio is read from config.json (which the engine checks against strategy_rules.json).
 BASELINE_PARAMS = {
     1: {'entry_lookback': 20, 'exit_lookback': 10},
     2: {'atr_period': 10, 'atr_multiplier': 3.0},
@@ -55,7 +67,8 @@ BASELINE_PARAMS = {
     4: {'ema_fast': 20, 'ema_slow': 50, 'sma_trend': 200},
     5: {'bb_period': 20, 'bb_std': 2.0, 'sma_trend': 200},
     6: {'ema_fast': 12, 'ema_slow': 26, 'signal_period': 9, 'sma_trend': 50},
-    7: {'high_lookback': 252, 'near_high_ratio': 0.90, 'sma_trend': 200, 'sma_exit': 50, 'trail_ratio': 0.90},
+    7: {'high_lookback': 252, 'near_high_ratio': 0.90, 'sma_trend': 200, 'sma_exit': 50,
+        'trail_ratio': float(ENGINE_CONFIG['strategy_07_trail_fraction'])},
 }
 
 SCALED_CORP_ACTIONS = frozenset({'SPLIT', 'BONUS', 'EXTRAORDINARY_DIVIDEND'})
@@ -109,19 +122,31 @@ def validate_parameter_only_mutation(strategy, params):
     for k, v in params.items():
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)) or float(v) <= 0:
             raise ValueError(f'invalid_parameter_value:{k}={v}')
-        merged[k] = type(allowed[k])(v) if isinstance(allowed[k], int) and float(v).is_integer() else float(v)
+        if isinstance(allowed[k], int):
+            if not float(v).is_integer():
+                raise ValueError(f'integer_parameter_required:{k}={v}')
+            merged[k] = int(v)
+        else:
+            merged[k] = float(v)
     return merged
+
+
+HARNESS_FILES = (
+    'adaptive_engine.py', 'adaptive_policy.py', 'adaptive_policy.json', 'atomic_gates.py', 'residualized_check.py',
+    'trial_counting.py', 'calibration.py', 'adaptive_promotion.py', 'adaptive_logging.py', 'pit_archive.py',
+    'strategy_indicators.py', 'strategy_rules.json', 'capital_policy.json', 'charge_rates.json',
+)
 
 
 def compute_harness_hash():
     """Compute a deterministic SHA-256 hash of the adaptive engine and indicator rules."""
-    here = Path(__file__).resolve()
-    ind = here.parent / 'strategy_indicators.py'
-    rules = here.parent / 'strategy_rules.json'
+    root = Path(__file__).resolve().parent
     h = hashlib.sha256()
-    for p in (here, ind, rules):
-        if p.exists():
-            h.update(p.read_bytes())
+    for name in HARNESS_FILES:
+        p = root / name
+        if not p.exists():
+            raise FileNotFoundError(f'harness_file_missing:{name}')
+        h.update(name.encode() + b'\0' + p.read_bytes())
     return h.hexdigest()
 
 
@@ -304,45 +329,121 @@ def evaluate_parameterized_strategy(strategy, df, params=None):
     raise ValueError(f'unsupported_strategy:{s}')
 
 
-def estimate_exit_haircut_paise(qty, mark_price, series='EQ', locked_lower_days=0, adv_inr=200_000_000, stress=False):
-    """Compute exit haircut in paise for an open position (sell charges + tiered slippage + circuit lock haircut)."""
+def _div_half_up(n, d):
+    """Integer division rounding half up, identical to fees.mjs div() for non-negative operands."""
+    return (int(n) + int(d) // 2) // int(d)
+
+
+def fill_charges_paise(turnover_paise, side, overnight_dp=False):
+    """Per-fill statutory charges from the frozen charge_rates.json, mirroring fees.mjs estimate() with prior=0.
+
+    BUY pays stamp duty and no DP; SELL pays DP (+GST) once when it closes an overnight delivery position.
+    """
+    v = int(turnover_paise)
+    if v <= 0 or side not in ('BUY', 'SELL'):
+        raise ValueError('fee_inputs')
+    r = CHARGE_RATES
+
+    def part(k):
+        return 0 if int(r[k]['num']) == 0 else _div_half_up(v * int(r[k]['num']), int(r[k]['den']))
+
+    f = {k: part(k) for k in ('brokerage', 'exchange', 'sebi', 'ipft', 'clearing')}
+    f['brokerage'] = min(f['brokerage'], int(r['brokerage']['cap_paise']))
+    unit = int(r['stt']['round_to_paise'])
+    f['stt'] = _div_half_up(v * int(r['stt']['num']), int(r['stt']['den']) * unit) * unit if side in r['stt']['sides'] else 0
+    f['stamp'] = _div_half_up(v * int(r['stamp']['num']), int(r['stamp']['den'])) if side in r['stamp']['sides'] else 0
+    f['gst'] = _div_half_up(sum(f[k] for k in r['gst']['base']) * int(r['gst']['num']), int(r['gst']['den']))
+    f['dp'] = int(r['dp']['charge_paise']) if overnight_dp else 0
+    f['dp_gst'] = int(r['dp']['gst_paise']) if overnight_dp else 0
+    f['total'] = sum(f.values())
+    return f
+
+
+def slippage_fill_paise(reference_paise, order_paise, adv_paise, side, stress=False):
+    """Tiered ADV slippage from the frozen capital_policy.json, mirroring fees.mjs executionSlippage()."""
+    ref, order, adv = int(reference_paise), int(order_paise), int(adv_paise)
+    if adv <= 0 or order <= 0 or ref <= 0 or side not in ('BUY', 'SELL'):
+        raise ValueError('slippage_inputs')
+    cp = CAPITAL_POLICY
+    tier_paise = int(cp['slippage_tier_threshold_inr']) * 100
+    base = int(cp['slippage_base_bps_through_20cr']) if adv <= tier_paise else int(cp['slippage_base_bps_above_20cr'])
+    k = Fraction(str(cp['slippage_participation_multiplier_bps'])) / Fraction(str(cp['participation_rate']))
+    bps = Fraction(base) + k * Fraction(order, adv)
+    if stress:
+        bps *= Fraction(str(cp['slippage_stress_multiplier']))
+    factor = 1 + bps / 10_000 if side == 'BUY' else 1 - bps / 10_000
+    if factor <= 0:
+        raise ValueError('slippage_bounds')
+    out = math.floor(ref * factor + Fraction(1, 2))
+    if out <= 0:
+        raise ValueError('slippage_bounds')
+    return {'price_paise': int(out), 'base_bps': base, 'bps': float(bps), 'stress': bool(stress)}
+
+
+def lagged_adv_paise(sym_hist, day):
+    """Lagged median traded value (paise) exactly as Track A db.mjs laggedAdv(): sessions strictly before day,
+    special sessions excluded, turnover else close*volume, last adv_lookback_sessions rows. None if history is short."""
+    lookback = int(CAPITAL_POLICY['adv_lookback_sessions'])
+    if sym_hist is None or sym_hist.empty:
+        return None
+    h = sym_hist[(sym_hist['trade_date'].astype(str) < str(day)) & (~sym_hist['trade_date'].astype(str).isin(ADV_EXCLUDED_SESSIONS))]
+    vals = []
+    for _, row in h.sort_values('trade_date', ascending=False).iterrows():
+        tv = row['turnover'] if 'turnover' in h.columns and pd.notna(row.get('turnover')) else None
+        if tv is None:
+            vol, cl = float(row.get('volume') or 0), float(row.get('close') or 0)
+            if vol > 0 and cl > 0:
+                tv = cl * vol
+        if tv is not None:
+            vals.append(int(round(float(tv) * 100)))
+        if len(vals) >= lookback:
+            break
+    if len(vals) < lookback:
+        return None
+    vals.sort()
+    mid = lookback // 2
+    return vals[mid] if lookback % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
+def circuit_haircut_paise(gross_paise, locked_lower_days):
+    """Lower-circuit carry-forward haircut: capital_policy circuit_lock_haircut_pct_per_extra_day per locked day after the first."""
+    extra = max(0, int(locked_lower_days) - 1)
+    pct = min(100, extra * int(CAPITAL_POLICY['circuit_lock_haircut_pct_per_extra_day']))
+    return (int(gross_paise) * pct) // 100
+
+
+def estimate_exit_haircut_paise(qty, mark_price, series='EQ', locked_lower_days=0, adv_paise=None, stress=False):
+    """Exit haircut in paise for an open position: frozen sell charges (incl. overnight DP) + tiered exit slippage
+    (stress multiplier on BE/BZ or explicit stress) + lower-circuit carry-forward haircut.
+
+    When lagged ADV is unknown, Track A applies no exit slippage ('exit_slippage_unavailable'); the same is done here
+    and reported as slippage_applied=False so callers can see it.
+    """
     qty = int(qty)
     if qty <= 0:
         return 0
     mark_paise = cap.price_paise(mark_price)
     gross_paise = qty * mark_paise
-
-    # 1. Lower-circuit carry-forward haircut: 1% per locked day after the first
-    extra_locked = max(0, int(locked_lower_days) - 1)
-    circuit_loss_paise = (gross_paise * min(100, extra_locked)) // 100
-
-    # 2. Tiered exit slippage (1.5x stress on BE/BZ or explicit stress mode)
-    base_bps = 5 if float(adv_inr) > 200_000_000 else 8
-    part_bps = 10.0 * (gross_paise / 100.0) / max(1.0, 0.005 * float(adv_inr))
-    total_bps = base_bps + part_bps
-    if stress or str(series).upper() in ('BE', 'BZ'):
-        total_bps *= 1.5
-    slippage_paise = int(math.ceil(gross_paise * (total_bps / 10_000.0)))
-
-    # 3. Modeled sell charges (brokerage min(20 INR, 0.3%), STT 0.1%, exchange/SEBI/IPFT + 18% GST + overnight DP 14.75 INR)
-    brokerage_paise = min(2000, int(round(gross_paise * 0.003)))
-    stt_paise = int(round(gross_paise * 0.001))
-    exch_sebi_paise = int(round(gross_paise * 0.0000345))
-    gst_paise = int(round((brokerage_paise + exch_sebi_paise) * 0.18))
-    dp_paise = 1475 + 266  # 14.75 INR + 18% GST
-    fees_paise = brokerage_paise + stt_paise + exch_sebi_paise + gst_paise + dp_paise
-
+    circuit_loss_paise = circuit_haircut_paise(gross_paise, locked_lower_days)
+    slippage_paise = 0
+    if adv_paise:
+        stressed = bool(stress or CAPITAL_POLICY.get('slippage_stress') is True or str(series).upper() in ('BE', 'BZ'))
+        fill = slippage_fill_paise(mark_paise, gross_paise, adv_paise, 'SELL', stress=stressed)['price_paise']
+        slippage_paise = gross_paise - qty * fill
+    fees_paise = fill_charges_paise(gross_paise, 'SELL', overnight_dp=True)['total']
     return circuit_loss_paise + slippage_paise + fees_paise
 
 
-def value_starting_equity_net_of_haircut(cash_paise, open_positions, marks_by_symbol=None, series_by_symbol=None, locked_days_by_symbol=None, stress=False):
+def value_starting_equity_net_of_haircut(cash_paise, open_positions, marks_by_symbol=None, series_by_symbol=None, locked_days_by_symbol=None, stress=False, adv_paise_by_symbol=None):
     """Value starting equity E_0 net of exit haircut for all inherited open positions."""
     marks_by_symbol = marks_by_symbol or {}
     series_by_symbol = series_by_symbol or {}
     locked_days_by_symbol = locked_days_by_symbol or {}
+    adv_paise_by_symbol = adv_paise_by_symbol or {}
 
     gross_positions_paise = 0
     total_haircut_paise = 0
+    without_adv = 0
     for pos in open_positions:
         qty = int(pos.get('qty') or 0)
         if qty <= 0:
@@ -351,11 +452,15 @@ def value_starting_equity_net_of_haircut(cash_paise, open_positions, marks_by_sy
         px = marks_by_symbol.get(sym, pos.get('mark_price') or pos.get('entry_price'))
         px_paise = cap.price_paise(px)
         gross_positions_paise += qty * px_paise
+        adv = adv_paise_by_symbol.get(sym, pos.get('adv_paise'))
+        if not adv:
+            without_adv += 1
         total_haircut_paise += estimate_exit_haircut_paise(
             qty=qty,
             mark_price=px,
             series=series_by_symbol.get(sym, pos.get('series', 'EQ')),
             locked_lower_days=locked_days_by_symbol.get(sym, pos.get('locked_days', 0)),
+            adv_paise=adv,
             stress=stress,
         )
     gross_equity_paise = int(cash_paise) + gross_positions_paise
@@ -367,6 +472,7 @@ def value_starting_equity_net_of_haircut(cash_paise, open_positions, marks_by_sy
         'exit_haircut_paise': total_haircut_paise,
         'starting_equity_net_haircut_paise': net_equity_paise,
         'inherited_positions_count': sum(1 for p in open_positions if int(p.get('qty') or 0) > 0),
+        'positions_without_adv_slippage': without_adv,
     }
 
 
@@ -474,7 +580,7 @@ def spawn_candidate(
     stamp = spawned_at or _utc_now()
     h_hash = compute_harness_hash()
     d_hash = str(data_snapshot_hash or alog.compute_hash({'strategy': s, 'params': validated_params, 'at': stamp}))
-    seeds = list(rng_seeds or [20261109])
+    seeds = list(rng_seeds or [AP['base_seed']])
     inputs = decision_inputs or {'strategy': s, 'params': validated_params, 'tier': tier}
     sid = str(spawn_id or alog.compute_hash(f'{namespace}|{track}|{s}|{alog.stable_json(validated_params)}|{stamp}')[:32])
     cid = str(correlation_id or sid)
@@ -490,7 +596,7 @@ def spawn_candidate(
         (
             namespace, sid, cid, s, track, tier, parent_ver,
             alog.stable_json(validated_params), candidate_kind, eligible_for_selection,
-            1, 0.0, 1.0, 1.40, ws_days, target_days,
+            1, 0.0, 1.0, AP['critical_value_floor'], ws_days, target_days,
             eq_info['starting_equity_gross_paise'],
             eq_info['exit_haircut_paise'],
             eq_info['starting_equity_net_haircut_paise'],
@@ -501,7 +607,12 @@ def spawn_candidate(
     )])
 
     if candidate_kind in ('BASELINE', 'CANDIDATE', 'TRACK_C_COMPARISON') and track in ('A', 'B', 'C'):
-        slot_idx = int(active_in_track) + 1
+        # Reuse the lowest slot not held by a live track; never overwrite an active challenger/champion row.
+        live_slots = {int(r['slot_index']) for r in db.query(
+            "SELECT slot_index FROM adaptive_tracks WHERE namespace=? AND track=? AND strategy=? AND status IN ('active','challenger','champion','probation')",
+            (namespace, track, s),
+        )}
+        slot_idx = next(i for i in range(1, len(live_slots) + 2) if i not in live_slots)
         role_status = 'active' if track == 'A' else ('challenger' if track == 'B' else 'champion')
         db.batch([(
             'INSERT OR REPLACE INTO adaptive_tracks('
@@ -575,6 +686,14 @@ def evaluate_stopping_and_window(
     if not rows:
         raise KeyError(f'spawn_not_found:{spawn_id}')
     sp = rows[0]
+    if sp['status'] in TERMINAL_SPAWN_STATUSES or sp['status'] == 'EVALUATING':
+        # Non-informative stopping: a decided spawn (or one already handed to the final gate run) is never re-opened.
+        return {
+            'spawn_id': spawn_id,
+            'ready_for_final_gate_evaluation': False,
+            'status': sp['status'],
+            'reason': 'stopping_decision_already_final',
+        }
     target_days = int(sp['eval_window_target_days'])
     ext_days = int(sp['extension_days'] or 0)
     total_required_days = target_days + ext_days
@@ -654,6 +773,15 @@ def evaluate_stopping_and_window(
             'UPDATE adaptive_spawns SET extension_days=?,extension_reason=?,new_discordant_trades=?,distinct_entry_weeks=?,status=? WHERE namespace=? AND spawn_id=?',
             (EXTENSION_DAYS, 'preregistered_regime_flag', new_disc, weeks, 'EXTENDED', namespace, spawn_id),
         )])
+        alog.append_log(
+            db, namespace, correlation_id=sp['correlation_id'], spawn_id=spawn_id,
+            track=sp['track'], strategy=sp['strategy'],
+            category='WARM_START', decision_type='WINDOW_EXTEND', named_cause='preregistered_regime_flag',
+            rule_fired='single_15_day_extension_on_sample_or_regime',
+            conditions={'days_elapsed': days_elapsed, 'new_discordant_trades': new_disc, 'distinct_entry_weeks': weeks},
+            execution_details={'extension_days': EXTENSION_DAYS, 'new_total_window_days': target_days + EXTENSION_DAYS},
+            source_at=stamp,
+        )
         return {
             'spawn_id': spawn_id,
             'ready_for_final_gate_evaluation': False,
@@ -718,6 +846,10 @@ def simulate_track_window(
     starting_equity_summary = None
 
     symbols = sorted(stock_df['symbol'].astype(str).unique().tolist()) if not stock_df.empty else []
+    hist_by_symbol = {sym: stock_df[stock_df['symbol'].astype(str) == sym] for sym in symbols}
+    skips = []
+    adv_floor_paise = int(CAPITAL_POLICY['adv_floor_inr']) * 100
+    participation = Fraction(str(CAPITAL_POLICY['participation_rate']))
 
     for idx_d, day in enumerate(all_dates):
         in_eval = day > ws_end
@@ -733,6 +865,7 @@ def simulate_track_window(
                 if new_qty >= 1:
                     pos['qty'] = new_qty
                     pos['entry_price'] = round(pos['entry_price'] * den / num, 2)
+                    # entry_cost_paise is the cash actually paid and does not change with a split/bonus
                     pos['high_water'] = round(pos['high_water'] * den / num, 2)
 
         # 2. Fill pending signals from day t-1 at open of day t (exits first, then entries)
@@ -749,7 +882,7 @@ def simulate_track_window(
             if pos.get('pending_exit'):
                 exits.append({'symbol': sym, 'side': 'SELL', 'signal_date': day, 'reason': 'circuit_carry_forward'})
             elif s == 7:
-                trail_ratio = float(validated_params.get('trail_ratio', 0.90))
+                trail_ratio = float(validated_params['trail_ratio'])
                 stop_lvl = round(trail_ratio * pos['high_water'], 2)
                 if open_px <= stop_lvl:
                     exits.append({'symbol': sym, 'side': 'SELL', 'signal_date': day, 'stop': True, 'fill_override': open_px, 'reason': 'trail_gap'})
@@ -766,31 +899,33 @@ def simulate_track_window(
                 continue
             band = bands_by_date_symbol.get((day, sym), {})
             circuit = str(band.get('circuit') or 'NONE').upper()
-            pit_ser = pit.get_pit_series(db, sym, day, as_of_date=day) or str(band.get('series') or 'EQ').upper()
+            pit_ser = str(pit.get_pit_series(db, sym, day, as_of_date=day) or band.get('series') or 'UNKNOWN').upper()
             pos = positions[sym]
             if circuit == 'LOWER':
                 pos['pending_exit'] = True
                 pos['locked_days'] = int(pos.get('locked_days', 0)) + 1
                 continue
             raw_fill = float(sig.get('fill_override') or bar['open'])
-            haircut = estimate_exit_haircut_paise(
-                qty=pos['qty'],
-                mark_price=raw_fill,
-                series=pit_ser,
-                locked_lower_days=0,
-                stress=stress_slippage,
-            )
-            gross_proceeds = pos['qty'] * cap.price_paise(raw_fill)
-            net_proceeds = gross_proceeds - haircut
+            ref_paise = cap.price_paise(raw_fill)
+            adv = lagged_adv_paise(hist_by_symbol.get(sym), day)
+            fill_paise = ref_paise
+            if adv:
+                stressed = bool(stress_slippage or CAPITAL_POLICY.get('slippage_stress') is True or pit_ser in ('BE', 'BZ'))
+                fill_paise = slippage_fill_paise(ref_paise, pos['qty'] * ref_paise, adv, 'SELL', stress=stressed)['price_paise']
+            gross_proceeds = pos['qty'] * fill_paise
+            sell_fees = fill_charges_paise(gross_proceeds, 'SELL', overnight_dp=True)['total']
+            net_proceeds = gross_proceeds - sell_fees
             cash_paise += net_proceeds
-            entry_cost = pos['qty'] * cap.price_paise(pos['entry_price'])
+            entry_cost = pos['entry_cost_paise']
             closed_trades.append({
                 'symbol': sym,
                 'entry_date': pos['entry_date'],
                 'exit_date': day,
                 'qty': pos['qty'],
                 'entry_price': pos['entry_price'],
-                'exit_price': raw_fill,
+                'exit_price': fill_paise / 100.0,
+                'reference_exit_price': raw_fill,
+                'exit_slippage_applied': bool(adv),
                 'net_pnl_paise': net_proceeds - entry_cost,
                 'reason': sig.get('reason', 'daily_exit'),
             })
@@ -807,22 +942,42 @@ def simulate_track_window(
                 continue
             band = bands_by_date_symbol.get((day, sym), {})
             circuit = str(band.get('circuit') or 'NONE').upper()
-            pit_ser = pit.get_pit_series(db, sym, day, as_of_date=day) or str(band.get('series') or 'EQ').upper()
-            if circuit == 'UPPER' or pit_ser != 'EQ':
+            pit_ser = str(pit.get_pit_series(db, sym, day, as_of_date=day) or band.get('series') or 'UNKNOWN').upper()
+            if circuit == 'UPPER':
+                skips.append({'day': day, 'symbol': sym, 'cause': 'UPPER_CIRCUIT_BUY_BLOCK'})
+                continue
+            if pit_ser != 'EQ':
+                # EQ-only new entries; a missing PIT Bhavcopy SERIES is not assumed to be EQ.
+                skips.append({'day': day, 'symbol': sym, 'cause': 'PIT_SERIES_NOT_EQ' if pit_ser != 'UNKNOWN' else 'PIT_SERIES_UNKNOWN'})
                 continue
             open_px = float(bar['open'])
             qty = cap.integer_shares(open_px, TARGET_NOTIONAL_INR)
             if qty < 1:
+                skips.append({'day': day, 'symbol': sym, 'cause': CAPITAL_POLICY['zero_share_cause']})
                 continue
-            buy_haircut = estimate_exit_haircut_paise(qty=qty, mark_price=open_px, series='EQ', stress=stress_slippage)
-            need_paise = qty * cap.price_paise(open_px) + buy_haircut
+            adv = lagged_adv_paise(hist_by_symbol.get(sym), day)
+            if adv is None or adv < adv_floor_paise:
+                skips.append({'day': day, 'symbol': sym, 'cause': CAPITAL_POLICY['adv_filter_cause']})
+                continue
+            ref_paise = cap.price_paise(open_px)
+            order_paise = qty * ref_paise
+            if Fraction(order_paise) > participation * Fraction(adv):
+                skips.append({'day': day, 'symbol': sym, 'cause': CAPITAL_POLICY['participation_cause']})
+                continue
+            fill_paise = slippage_fill_paise(ref_paise, order_paise, adv, 'BUY', stress=bool(stress_slippage or CAPITAL_POLICY.get('slippage_stress') is True))['price_paise']
+            turnover = qty * fill_paise
+            buy_fees = fill_charges_paise(turnover, 'BUY')['total']
+            need_paise = turnover + buy_fees
             if cash_paise < need_paise:
+                skips.append({'day': day, 'symbol': sym, 'cause': CAPITAL_POLICY['sleeve_cash_cause']})
                 continue
             cash_paise -= need_paise
             positions[sym] = {
                 'symbol': sym,
                 'qty': qty,
-                'entry_price': open_px,
+                'entry_price': fill_paise / 100.0,
+                'entry_cost_paise': need_paise,
+                'adv_paise': adv,
                 'entry_date': day,
                 'high_water': max(open_px, float(bar['close'])),
                 'mark_price': float(bar['close']),
@@ -835,14 +990,16 @@ def simulate_track_window(
         marks = {}
         series_map = {}
         locked_map = {}
+        adv_map = {}
         for sym, pos in positions.items():
+            adv_map[sym] = lagged_adv_paise(hist_by_symbol.get(sym), day) or pos.get('adv_paise')
             bar = bar_map.get(sym)
             if bar is not None:
                 cl = float(bar['close'])
                 pos['mark_price'] = cl
                 pos['high_water'] = max(pos['high_water'], cl)
             marks[sym] = pos['mark_price']
-            series_map[sym] = pit.get_pit_series(db, sym, day, as_of_date=day) or pos.get('series', 'EQ')
+            series_map[sym] = pit.get_pit_series(db, sym, day, as_of_date=day) or pos.get('series') or 'UNKNOWN'
             locked_map[sym] = pos.get('locked_days', 0)
 
         # At the end of the warm-start window, record starting equity E_0 net of exit haircut
@@ -854,16 +1011,16 @@ def simulate_track_window(
                 series_by_symbol=series_map,
                 locked_days_by_symbol=locked_map,
                 stress=stress_slippage,
+                adv_paise_by_symbol=adv_map,
             )
 
         # Value end-of-day total portfolio equity (unlevered total MTM including cash)
         marked_val = 0
         for sym, pos in positions.items():
-            px = pos['mark_price']
-            if pos.get('pending_exit') and pos.get('locked_days', 0) > 1:
-                extra = min(99, pos['locked_days'] - 1)
-                px = round(px * (100 - extra) / 100.0, 2)
-            marked_val += pos['qty'] * cap.price_paise(px)
+            gross_pos = pos['qty'] * cap.price_paise(pos['mark_price'])
+            if pos.get('pending_exit'):
+                gross_pos -= circuit_haircut_paise(gross_pos, pos.get('locked_days', 0))
+            marked_val += gross_pos
         eod_equity_paise = cash_paise + marked_val
 
         if in_eval:
@@ -914,4 +1071,14 @@ def simulate_track_window(
         'daily_records': daily_records,
         'closed_trades': closed_trades,
         'open_positions': list(positions.values()),
+        'entry_skips': skips,
+        # Locks this simulator enforced on this run; Gate 7 requires this evidence instead of assuming it.
+        'microstructure_locks': {
+            'slippage_1_5x_liquidity_scaled': bool(stress_slippage),
+            'circuit_carry_forward': True,
+            'gap_aware_stops': True,  # Strategy 07 trail_gap/trail_touch; other strategies have no intraday stop
+            'indicator_back_adjustment': True,
+            'eq_only_new_entries': True,
+            'higher_slippage_be_bz': True,
+        },
     }

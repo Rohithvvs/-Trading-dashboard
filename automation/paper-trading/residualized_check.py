@@ -11,7 +11,10 @@ Implements Section 4 (Gate 2 & Gate 4), A5, A8.5, and B3 of the Definitive Codin
 import math
 import numpy as np
 
+import adaptive_policy as apol
 import trial_counting as tc
+
+AP = apol.POLICY
 
 
 def compute_paired_active_returns(r_var, r_base):
@@ -62,10 +65,10 @@ def newey_west_t_hac(series, max_lag=None):
     }
 
 
-def run_residualized_check(d_t, index_returns, beta_se_stability_threshold=0.50):
+def run_residualized_check(d_t, index_returns, beta_se_stability_threshold=AP['gate4_beta_se_stability_threshold'], max_subsample_beta_diff=AP['gate4_max_subsample_beta_diff']):
     """Regress d_t on index returns: d_t = alpha + beta * (R_idx,t - mean(R_idx)) + u_t, and also standard OLS intercept.
 
-    Wait: in standard OLS d_t = alpha + beta * R_idx,t + eps_t:
+    In standard OLS d_t = alpha + beta * R_idx,t + eps_t:
     - alpha = mean(d_t) - beta * mean(R_idx,t) is the benchmark-residualized mean active return
       (the part of d_t NOT explained by passive beta exposure to the index).
     - The residualized series adjusted for index exposure is r_res,t = d_t - beta * R_idx,t,
@@ -106,7 +109,7 @@ def run_residualized_check(d_t, index_returns, beta_se_stability_threshold=0.50)
     else:
         sub_diff = 0.0
 
-    beta_stable = math.isfinite(beta_se) and (beta_se <= float(beta_se_stability_threshold)) and (sub_diff <= 0.75)
+    beta_stable = math.isfinite(beta_se) and (beta_se <= float(beta_se_stability_threshold)) and (sub_diff <= float(max_subsample_beta_diff))
     residual_mean_positive = float(alpha) > 0.0
     gate4_binding = bool(beta_stable or not residual_mean_positive)
     gate4_passed = bool(residual_mean_positive and t_alpha > 0.0)
@@ -127,7 +130,7 @@ def run_residualized_check(d_t, index_returns, beta_se_stability_threshold=0.50)
     }
 
 
-def compute_capital_day_expectancy_bootstrap(d_t, block_size=5, n_boot=500, ci_level=0.90, seed=20261109):
+def compute_capital_day_expectancy_bootstrap(d_t, block_size=AP['bootstrap_block_size'], n_boot=AP['bootstrap_n_boot'], ci_level=AP['bootstrap_ci_level'], seed=AP['base_seed']):
     """Compute secondary metric: capital-day expectancy with circular block-bootstrap confidence interval."""
     d = np.asarray(d_t, dtype=float)
     n = len(d)
@@ -167,9 +170,9 @@ def evaluate_gate2_and_gate4(
     index_returns,
     k_cand=1,
     rho_bar=0.0,
-    cost_slippage_hurdle=0.0,
+    cost_slippage_hurdle=AP['gate2_cost_slippage_hurdle_daily'],
     alpha=tc.DEFAULT_ALPHA,
-    bootstrap_seed=20261109,
+    bootstrap_seed=AP['base_seed'],
 ):
     """Evaluate Gate 2 (paired daily active return d_t, t_HAC >= effective critical value, required residualized check)
     and Gate 4 (benchmark alpha, binding when residualized check or beta stability requires it).

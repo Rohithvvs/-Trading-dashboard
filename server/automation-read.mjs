@@ -5,6 +5,7 @@ import gatePolicy from '../automation/paper-trading/prefilter_policy.json' with 
 // Server-only SELECT analytics. No CLI execution, migrations or broker access.
 import instruments from './instruments.json' with {type:'json'};
 import calendar from '../automation/paper-trading/config.json' with {type:'json'};
+import adaptivePolicy from '../automation/paper-trading/adaptive_policy.json' with {type:'json'};
 import {estimate,paise,policy as bundledPolicy} from '../automation/paper-trading/fees.mjs';
 
 const NS='paper_v1',buckets=['single','exactly_2','exactly_3','4_plus','unavailable'];
@@ -25,21 +26,26 @@ export function weeklySummary(eods,day,calendar,now=new Date(day+'T23:59:00+05:3
  return {week_start:first,through:rows.at(-1)?.day??null,complete,expected_sessions:expected,gross_paise:complete?safe(rows.reduce((s,r)=>s+r.daily_gross_paise,0)):null,net_paise:complete?safe(rows.reduce((s,r)=>s+r.daily_net_accrued_paise,0)):null,reason:complete?'Verified daily changes only':'Awaiting complete, verified daily baselines and closing marks. Today is not finalized before EOD.'};
 }
 
+// Adaptive (Tracks A/B/C) read model. Column names below are the real schema.sql / adaptive_logging.py columns,
+// aliased to the fields the UI renders. Numbers come from adaptive_policy.json, never from literals here.
 export async function readAdaptiveSummary(select,ns=NS){
- const def={observation_only:calendar.adaptive_observation_only!==false,ci_lookahead_passed:false,calibration_go:false,power_floor_target:0.30,max_concurrent_challengers_track_b:3,max_champions_per_strategy_track_c:1,tracks:[],spawns:[],gate_evaluations:[],calibration_runs:[],probation:[],logs:[]};
+ const def={observation_only:calendar.adaptive_observation_only!==false,ci_lookahead_passed:false,calibration_go:false,power_floor_target:adaptivePolicy.power_floor,max_concurrent_challengers_track_b:adaptivePolicy.max_track_b_challengers,max_champions_per_strategy_track_c:adaptivePolicy.max_track_c_champions,policy_version:adaptivePolicy.version,tracks:[],spawns:[],gate_evaluations:[],calibration_runs:[],probation:[],logs:[],read_error:null};
  try{
-  const metaRows=await select("SELECT k,v FROM paper_meta WHERE k IN ('adaptive_observation_only','adaptive_ci_lookahead_passed')",[]);
+  const metaRows=await select("SELECT key AS k,value AS v FROM paper_meta WHERE namespace=? AND key IN ('adaptive_observation_only','adaptive_ci_lookahead_passed')",[ns]);
   const meta=Object.fromEntries(metaRows.map(r=>[r.k,r.v]));
   const obsOnly=meta.adaptive_observation_only!==undefined?!['false','0','no'].includes(String(meta.adaptive_observation_only).toLowerCase()):calendar.adaptive_observation_only!==false;
   const ciPass=['true','1','passed'].includes(String(meta.adaptive_ci_lookahead_passed??'').toLowerCase());
-  const tracks=await select('SELECT track_id,tier,strategy,parent_track_id,status,spawn_id,params_json,rules_hash,code_sha256,universe_snapshot_hash,cost_model_version,warm_start_days,target_window_days,extension_days,starting_equity_paise,exit_haircut_paise,created_at,updated_at FROM adaptive_tracks WHERE namespace=? ORDER BY tier,strategy,created_at DESC LIMIT 100',[ns]);
-  const spawns=await select('SELECT spawn_id,strategy,track_id,tier,rules_hash,code_sha256,universe_snapshot_hash,cost_model_version,k_cand,rho_bar,k_eff,effective_critical_t,warm_start_days,target_window_days,extension_days,extension_reason,status,spawned_at,evaluated_at FROM adaptive_spawns WHERE namespace=? ORDER BY spawned_at DESC LIMIT 50',[ns]);
-  const gates=await select('SELECT spawn_id,strategy,track_id,evaluated_on_day,window_days_used,k_cand,rho_bar,k_eff,effective_critical_t,t_hac,d_bar_bps,residualized_mean_bps,residualized_passed,gate4_binding,all_gates_passed,terminal_status,track_c_superiority_passed,gates_json,evaluated_at FROM adaptive_gate_evaluations WHERE namespace=? ORDER BY evaluated_at DESC LIMIT 50',[ns]);
-  const cal=await select('SELECT run_id,partition_name,window_days,injected_edge_bps,power_30_45_bps,power_floor_target,go_no_go_passed,mde_table_json,summary_json,created_at FROM adaptive_calibration_runs WHERE namespace=? ORDER BY created_at DESC LIMIT 20',[ns]);
-  const prob=await select('SELECT strategy,track_c_id,track_a_id,probation_days,cumulative_d_t_bps,t_hac,demoted,demotion_reason,updated_at FROM adaptive_probation WHERE namespace=? ORDER BY strategy LIMIT 20',[ns]);
-  const logs=await select('SELECT seq_id,prev_hash,entry_hash,correlation_id,spawn_id,track_id,tier,strategy,event_type,named_cause,payload_json,created_at FROM adaptive_decision_logs WHERE namespace=? ORDER BY seq_id DESC LIMIT 100',[ns]);
-  return {...def,observation_only:obsOnly,ci_lookahead_passed:ciPass,calibration_go:cal.some(c=>Number(c.go_no_go_passed)===1),tracks:tracks.map(r=>({...r,params:parse(r.params_json)})),spawns,gate_evaluations:gates.map(r=>({...r,gates:parse(r.gates_json)})),calibration_runs:cal.map(r=>({...r,mde_table:parse(r.mde_table_json),summary:parse(r.summary_json)})),probation:prob,logs:logs.map(r=>({...r,payload:parse(r.payload_json)}))};
- }catch{return def;}
+  const tracks=await select("SELECT t.track||'-S'||t.strategy||'-'||t.slot_index AS track_id,t.track AS tier,t.strategy,t.slot_index,t.status,t.spawn_id,t.params_json,s.warm_start_days,s.eval_window_target_days AS target_window_days,s.extension_days,t.starting_equity_net_haircut_paise AS starting_equity_paise,s.exit_haircut_paise,s.harness_hash,s.data_snapshot_hash,t.created_at,t.updated_at FROM adaptive_tracks t LEFT JOIN adaptive_spawns s ON s.namespace=t.namespace AND s.spawn_id=t.spawn_id WHERE t.namespace=? ORDER BY t.track,t.strategy,t.created_at DESC LIMIT 100",[ns]);
+  const spawns=await select('SELECT spawn_id,strategy,track AS track_id,tier,candidate_kind,k_cand,rho_bar,k_eff,effective_critical_value AS effective_critical_t,warm_start_days,eval_window_target_days AS target_window_days,extension_days,extension_reason,status,harness_hash,data_snapshot_hash,spawned_at,decided_at AS evaluated_at FROM adaptive_spawns WHERE namespace=? ORDER BY spawned_at DESC LIMIT 50',[ns]);
+  const gates=await select('SELECT g.spawn_id,g.strategy,s.track AS track_id,g.decision_day AS evaluated_on_day,g.k_cand,g.rho_bar,g.k_eff,g.effective_critical_value AS effective_critical_t,g.t_hac,g.d_t_mean*10000.0 AS d_bar_bps,g.residual_alpha*10000.0 AS residualized_mean_bps,g.gate4_binding,g.overall_passed AS all_gates_passed,g.status AS terminal_status,g.observation_only,g.gates_json,g.recorded_at AS evaluated_at FROM adaptive_gate_evaluations g LEFT JOIN adaptive_spawns s ON s.namespace=g.namespace AND s.spawn_id=g.spawn_id WHERE g.namespace=? ORDER BY g.recorded_at DESC LIMIT 50',[ns]);
+  const cal=await select("SELECT calibration_id AS run_id,strategy,partition_name,injected_edge*10000.0 AS injected_edge_bps,mde*10000.0 AS mde_bps,measured_power,power_floor AS power_floor_target,CASE WHEN go_no_go='GO' THEN 1 ELSE 0 END AS go_no_go_passed,go_no_go,pipeline_mode,holdout_touched,vault_spent,details_json AS summary_json,recorded_at AS created_at FROM adaptive_calibration_runs WHERE namespace=? ORDER BY recorded_at DESC LIMIT 20",[ns]);
+  const prob=await select('SELECT strategy,spawn_id AS track_c_id,days_monitored AS probation_days,required_days,cumulative_active_return*10000.0 AS cumulative_d_t_bps,tracking_error_limit,status,meta_kill_triggered AS demoted,updated_at FROM adaptive_probation WHERE namespace=? ORDER BY strategy LIMIT 20',[ns]);
+  const logs=await select('SELECT seq AS seq_id,prev_hash,entry_hash,correlation_id,spawn_id,track AS tier,strategy,category,decision_type AS event_type,named_cause,execution_details_json AS payload_json,recorded_at AS created_at FROM adaptive_decision_logs WHERE namespace=? ORDER BY seq DESC LIMIT 100',[ns]);
+  return {...def,observation_only:obsOnly,ci_lookahead_passed:ciPass,calibration_go:cal.some(c=>Number(c.go_no_go_passed)===1),tracks:tracks.map(r=>({...r,params:parse(r.params_json)})),spawns,gate_evaluations:gates.map(r=>({...r,gates:parse(r.gates_json)})),calibration_runs:cal.map(r=>({...r,summary:parse(r.summary_json)})),probation:prob,logs:logs.map(r=>({...r,payload:parse(r.payload_json)}))};
+ }catch(e){
+  // Missing adaptive tables are a normal 'not initialized' state; any other SQL failure is surfaced, not hidden.
+  return {...def,read_error:/no such table/i.test(String(e?.message||''))?'adaptive_tables_not_initialized':'adaptive_read_failed'};
+ }
 }
 
 export async function readAutomation(o,select,now){

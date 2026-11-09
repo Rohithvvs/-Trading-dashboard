@@ -239,7 +239,8 @@ def archive_daily_prefilter(db, namespace, trade_date, stock_df, index_df, symbo
         sym_df = grouped.get(sym, pd.DataFrame())
         res = pf.evaluate(sym_df, pit_index, tdate)
         pit_ser = get_pit_series(db, sym, tdate, as_of_date=as_of_date or tdate)
-        res['pit_series'] = pit_ser or 'EQ'
+        # No silent EQ default: without a PIT Bhavcopy SERIES row the series is UNKNOWN (fails require_eq_series).
+        res['pit_series'] = pit_ser or 'UNKNOWN'
         status = res['status']
         counts[status] = counts.get(status, 0) + 1
         eligible = 1 if status == 'PASS' else 0
@@ -309,7 +310,7 @@ def get_pit_prefilter_universe(db, namespace, trade_date, as_of_date=None, polic
     by_symbol = {}
     for r in rows:
         sym = str(r['symbol'])
-        ser = get_pit_series(db, sym, tdate, as_of_date=as_of_date or tdate) or str(r.get('pit_series') or 'EQ').upper()
+        ser = get_pit_series(db, sym, tdate, as_of_date=as_of_date or tdate) or str(r.get('pit_series') or 'UNKNOWN').upper()
         is_pass = int(r['eligible']) == 1 and str(r['status']) == 'PASS'
         if require_eq_series and ser != 'EQ':
             is_pass = False

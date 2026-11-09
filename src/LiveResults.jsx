@@ -12,20 +12,21 @@ export function PnlLines({rows}){const [active,setActive]=useState(null);const g
 export function AdaptiveTracksView({adaptive}){
  const [tierFilter,setTierFilter]=useState('ALL');
  const a=adaptive??{observation_only:true,ci_lookahead_passed:false,calibration_go:false,power_floor_target:0.30,max_concurrent_challengers_track_b:3,max_champions_per_strategy_track_c:1,tracks:[],spawns:[],gate_evaluations:[],calibration_runs:[],probation:[],logs:[]};
- const tracksA=a.tracks.filter(t=>t.tier==='A'),tracksB=a.tracks.filter(t=>t.tier==='B'&&t.status==='active'),tracksC=a.tracks.filter(t=>t.tier==='C'&&t.status==='active');
+ // adaptive_engine.py writes 'challenger' (Track B) and 'champion'/'probation' (Track C); 'active' is Track A.
+ const tracksA=a.tracks.filter(t=>t.tier==='A'),tracksB=a.tracks.filter(t=>t.tier==='B'&&['active','challenger'].includes(t.status)),tracksC=a.tracks.filter(t=>t.tier==='C'&&['active','champion','probation'].includes(t.status));
  const filteredTracks=tierFilter==='ALL'?a.tracks:a.tracks.filter(t=>t.tier===tierFilter);
  const filteredLogs=tierFilter==='ALL'?a.logs:a.logs.filter(l=>l.tier===tierFilter);
  return <div className="adaptive-tracks-view">
   <Panel title="3-Tier Adaptive Architecture · Tracks A, B & C" kicker="PURE PAPER · PARAMETER-ONLY MUTATIONS · ATOMIC GATES 1–9">
    <div className="study-metrics">
-    <InfoMetric title="Track A · Frozen baseline" value={`${tracksA.length||7} sleeves frozen`} explanation="Permanent frozen baseline (never mutated). Reference for paired daily active return d_t and Track C probation." example="Strategies 1–7 immutable Track A baseline."/>
-    <InfoMetric title="Track B · Concurrent challengers" value={`${tracksB.length} / ${a.max_concurrent_challengers_track_b??3} active`} explanation="Maximum 2–3 concurrent parameter-only challengers in pure paper. Warm-start: 60d (Fast Swing) or 100–120d (Trend)." example="Excess challenger spawns are blocked with TRACK_B_CONCURRENCY_LIMIT_REACHED."/>
-    <InfoMetric title="Track C · Strategy champions" value={`${tracksC.length} / 7 strategies`} explanation="Maximum 1 champion per strategy in pure paper. Monitored under post-promotion probation vs Track A." example="Auto-demotes to Track A if cumulative d_t < 0 over 60 days at p < 0.10."/>
-    <InfoMetric title="Promotion mode & locks" value={a.observation_only?'Observation-only':'Auto-promotion armed'} explanation="Promotions require observation_only=false, CI look-ahead truncation pass, and calibration go/no-go ≥ 30% power." example="Blocked with PROMOTION_BLOCKED_OBSERVATION_ONLY while in observation mode."/>
+    <InfoMetric title="Track A · Frozen baseline" value={tracksA.length?`${tracksA.length} baseline replicas recorded`:'No baseline replicas recorded yet'} explanation="Permanent frozen baseline (never mutated). Reference for paired daily active return d_t and Track C probation." example="Strategies 1–7 immutable Track A baseline."/>
+    <InfoMetric title="Track B · Concurrent challengers" value={`${tracksB.length} / ${a.max_concurrent_challengers_track_b??3} active`} explanation="Maximum 2–3 concurrent parameter-only challengers in pure paper. Warm-start: 60d (Fast Swing) or 100–120d (Trend)." example={`Spawns beyond ${a.max_concurrent_challengers_track_b} are refused (track_b_max_${a.max_concurrent_challengers_track_b}_concurrent_challengers_exceeded).`}/>
+    <InfoMetric title="Track C · Strategy champions" value={`${tracksC.length} / 7 strategies`} explanation="Maximum 1 champion per strategy in pure paper. Monitored under post-promotion probation vs Track A." example="Meta-kill switch demotes a champion that keeps losing to Track A (thresholds in adaptive_policy.json, pending review)."/>
+    <InfoMetric title="Promotion mode & locks" value={a.observation_only?'Observation-only':'Auto-promotion armed'} explanation={`Promotions require observation_only=false, CI look-ahead truncation pass, and calibration go/no-go ≥ ${Math.round(a.power_floor_target*100)}% power.`} example="Blocked with PROMOTION_BLOCKED_OBSERVATION_ONLY while in observation mode."/>
    </div>
    <div className="live-read-ribbon" role="group" aria-label="Adaptive tier filter controls">
     <Badge tone={a.observation_only?'amber':'green'}>{a.observation_only?'Observation-only lock active':'Auto-promotion enabled'}</Badge>
-    <Badge tone={a.calibration_go?'green':'amber'}>{a.calibration_go?'Calibration Go (≥30% power)':'Calibration No-Go / Pending'}</Badge>
+    <Badge tone={a.calibration_go?'green':'amber'}>{a.calibration_go?`Calibration Go (≥${Math.round(a.power_floor_target*100)}% power)`:'Calibration No-Go / Pending'}</Badge>
     <Badge tone={a.ci_lookahead_passed?'green':'amber'}>{a.ci_lookahead_passed?'CI Look-ahead Truncation Verified':'CI Look-ahead Check Pending'}</Badge>
     {['ALL','A','B','C'].map(tier=><button key={tier} type="button" className="button" aria-pressed={tierFilter===tier} onClick={()=>setTierFilter(tier)}>{tier==='ALL'?'All Tracks':`Track ${tier}`}</button>)}
    </div>

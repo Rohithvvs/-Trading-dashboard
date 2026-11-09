@@ -16,6 +16,7 @@ from pathlib import Path
 
 import adaptive_engine as ae
 import adaptive_logging as alog
+import adaptive_policy as apol
 
 CFG_PATH = Path(__file__).resolve().parent / 'config.json'
 
@@ -32,7 +33,7 @@ def default_observation_only():
         return True
 
 
-def record_observation_period_completed(db, namespace, strategy, sessions_observed, min_sessions=15, recorded_at=None):
+def record_observation_period_completed(db, namespace, strategy, sessions_observed, min_sessions=apol.POLICY['observation_min_sessions'], recorded_at=None):
     """Record completion of the observation-only period for a strategy once min_sessions have been observed."""
     s = int(strategy)
     n = int(sessions_observed)
@@ -111,6 +112,22 @@ def check_promotion_prerequisites(db, namespace, strategy, spawn_id, observation
     )
     gates_passed = bool(gate_rows and int(gate_rows[0]['overall_passed']) == 1)
 
+    sp_rows = db.query('SELECT track,candidate_kind,status FROM adaptive_spawns WHERE namespace=? AND spawn_id=?', (namespace, str(spawn_id)))
+    is_track_b_candidate = bool(sp_rows and sp_rows[0]['track'] == 'B' and sp_rows[0]['candidate_kind'] == 'CANDIDATE'
+                                and sp_rows[0]['status'] in ('OBSERVATION_ONLY', 'PASSED'))
+
+    # Incremental superiority must have been tested against the champion that is live NOW (a champion promoted
+    # after this challenger's gate run was never compared against it).
+    live_champion = db.query(
+        "SELECT spawn_id FROM adaptive_tracks WHERE namespace=? AND track='C' AND strategy=? AND status IN ('champion','probation') AND spawn_id<>?",
+        (namespace, s, str(spawn_id)),
+    )
+    track_c_superiority_ok = True
+    if live_champion:
+        details = json.loads(gate_rows[0]['gates_json']) if gate_rows else {}
+        cmp_ = details.get('track_c_comparison') or {}
+        track_c_superiority_ok = bool(cmp_.get('passed')) and bool(details.get('track_c_champion_present'))
+
     blockers = []
     if obs_flag:
         blockers.append('observation_only_mode_enabled')
@@ -124,6 +141,10 @@ def check_promotion_prerequisites(db, namespace, strategy, spawn_id, observation
         blockers.append('meta_kill_switch_active')
     if not gates_passed:
         blockers.append('atomic_gates_not_passed')
+    if not is_track_b_candidate:
+        blockers.append('not_a_gate_passed_track_b_candidate')
+    if not track_c_superiority_ok:
+        blockers.append('incremental_superiority_vs_current_track_c_not_tested')
 
     return {
         'can_promote': len(blockers) == 0,
@@ -133,6 +154,7 @@ def check_promotion_prerequisites(db, namespace, strategy, spawn_id, observation
         'ci_lookahead_passed': ci_lookahead_passed,
         'meta_kill_active': meta_kill_active,
         'gates_passed': gates_passed,
+        'track_c_superiority_ok': track_c_superiority_ok,
         'blockers': blockers,
     }
 

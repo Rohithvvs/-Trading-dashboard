@@ -12,13 +12,14 @@ from statistics import NormalDist
 import numpy as np
 
 import adaptive_logging as alog
+import adaptive_policy as apol
 
 ELIGIBLE_CANDIDATE_KINDS = frozenset({'CANDIDATE', 'TRACK_C_COMPARISON'})
 EXCLUDED_CANDIDATE_KINDS = frozenset({'PLACEBO', 'PLATEAU_NEIGHBOR', 'SHADOW', 'BASELINE'})
 
-MAX_RHO_BAR = 0.90
-MIN_CRITICAL_VALUE_FLOOR = 1.40
-DEFAULT_ALPHA = 0.05
+MAX_RHO_BAR = apol.POLICY['max_rho_bar']
+MIN_CRITICAL_VALUE_FLOOR = apol.POLICY['critical_value_floor']
+DEFAULT_ALPHA = apol.POLICY['alpha']
 
 
 def count_k_cand(records):

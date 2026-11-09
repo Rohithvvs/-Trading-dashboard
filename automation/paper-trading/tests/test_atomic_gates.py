@@ -88,6 +88,8 @@ class AtomicGatesTests(unittest.TestCase):
         mean_d = float(np.mean(r_var - r_base))
         neighbor_improvements = [mean_d * 0.85, mean_d * 0.82, mean_d * 0.79]
 
+        ready = ae.evaluate_stopping_and_window(self.db, ns, sid, days_elapsed=45, new_discordant_trades=12, distinct_entry_weeks=6)
+        self.assertTrue(ready['ready_for_final_gate_evaluation'])
         res = ag.evaluate_all_atomic_gates(
             self.db,
             namespace=ns,
@@ -107,6 +109,7 @@ class AtomicGatesTests(unittest.TestCase):
             r_track_c=r_track_c,
             track_c_threshold_bps=0.35,
             observation_only=True,
+            microstructure_checks=dict.fromkeys(ag.MICROSTRUCTURE_LOCKS, True),
         )
         self.assertTrue(res['overall_passed'])
         self.assertEqual(res['status'], 'OBSERVATION_ONLY')
