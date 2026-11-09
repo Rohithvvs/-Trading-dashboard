@@ -35,9 +35,9 @@ The engine is not installed on the bot box.
 
 ## Task Group D — open price
 
-- [ ] Official open or `FALLBACK_OPEN`
-- [ ] `execution_path` selected per fill
-- [ ] Bhavcopy comparison script
+- [x] Official open or `FALLBACK_OPEN`. Fyers `open_price` is `FEED_OPEN`. Auction equilibrium is used only when that open is missing. A first trade with no open is `FALLBACK_OPEN`. No open stays `LTP_LEGACY`.
+- [x] `execution_path` selected per fill. Share count and slippage use that reference. Polled stops still use the last trade.
+- [x] Bhavcopy comparison script (`bhavcopy_compare.py`). Differences are `OFFICIAL_OPEN_DIFF`. The report is append-only and hash-chained. It does not change fills.
 
 ## Task Group E — microstructure
 

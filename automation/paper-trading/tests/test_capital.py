@@ -19,6 +19,8 @@ class CapitalTests(unittest.TestCase):
         self.assertIn('adv_participation_cap', cap.POLICY['enforced'])
         self.assertEqual(cap.POLICY['participation_rate'], 0.005)
         self.assertIn('tiered_slippage', cap.POLICY['enforced'])
+        self.assertIn('execution_path', cap.POLICY['enforced'])
+        self.assertNotIn('execution_path', cap.POLICY['recorded_not_yet_enforced'])
         self.assertFalse(cap.POLICY['slippage_stress'])
         self.assertNotIn('sleeve_cash', cap.POLICY['recorded_not_yet_enforced'])
         self.assertEqual(cap.POLICY['max_positions_per_sleeve'] * cap.POLICY['target_notional_inr'], 450000)

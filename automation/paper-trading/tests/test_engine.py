@@ -183,6 +183,29 @@ class PaperTests(unittest.TestCase):
    def quotes(_,symbols):return {'RELIANCE-EQ':self.quote(85)}
   r=e.monitor(self.db,Feed());self.assertEqual(r['fills'],1);fills=self.db.query('SELECT * FROM paper_fills WHERE namespace=? ORDER BY id',(e.NS,));self.assertLess(fills[-1]['price'],85);self.assertNotEqual(fills[-1]['price'],90)
   exit_decision=json.loads(self.db.query("SELECT payload_json FROM paper_decisions WHERE namespace=? AND decision_type='EXIT'",(e.NS,))[0]['payload_json']);self.assertEqual(exit_decision['reference_price'],85);self.assertEqual(exit_decision['slippage_rule'],'tiered_adv_slippage')
+ def test_open_path_sizes_on_the_official_open(self):
+  mapped=e.quote_from_fyers({'n':'NSE:RELIANCE-EQ','s':'ok','v':{'lp':100,'open_price':90,'indicative_price':80,'reference_price':79,'tt':'2026-11-09T10:00:00+05:30'}})
+  self.assertEqual(mapped['open'],90);self.assertEqual(mapped['price'],100);self.assertNotIn('auction_price',mapped)
+  auction_only=e.quote_from_fyers({'n':'NSE:TCS-EQ','s':'ok','v':{'lp':100,'open_price':0,'indicative_price':80,'reference_price':79,'tt':'2026-11-09T10:00:00+05:30'}})
+  self.assertIsNone(auction_only['open']);self.assertEqual(auction_only['auction_price'],80)
+  repeated=e.quote_from_fyers({'n':'NSE:INFY-EQ','s':'ok','v':{'lp':100,'indicative_price':100,'reference_price':0,'tt':'2026-11-09T10:00:00+05:30'}})
+  self.assertNotIn('auction_price',repeated)
+  self.assertEqual(e.execution_reference({'price':85,'open':90},stop=True),(85,'LTP_LEGACY'))
+  q=self.quote();q['open']=90;q['auction_price']=80
+  s=self.signal();fed=e.fill(self.db,s,q,T);self.assertTrue(fed['filled']);self.assertEqual(fed['qty'],555);self.assertEqual(fed['execution_path'],'FEED_OPEN');self.assertGreater(fed['price'],90)
+  payload=json.loads(self.db.query('SELECT rule,execution_path,payload_json FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]['payload_json'])
+  decision=self.db.query('SELECT rule,execution_path FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]
+  self.assertEqual(decision['execution_path'],'FEED_OPEN');self.assertEqual(decision['rule'],'feed_official_open');self.assertEqual(payload['reference_price'],90)
+  self.assertEqual(self.db.query('SELECT execution_path FROM paper_fills WHERE namespace=? AND signal_id=?',(e.NS,s['id']))[0]['execution_path'],'FEED_OPEN')
+  aq={'symbol':'TCS-EQ','price':100,'quote_at':T.isoformat(),'auction_price':80}
+  caught=e.fill(self.db,self.signal(symbol='TCS-EQ'),aq,T);self.assertTrue(caught['filled']);self.assertEqual(caught['qty'],625);self.assertEqual(caught['execution_path'],'AUCTION_CAPTURE');self.assertGreater(caught['price'],80)
+  fq={'symbol':'INFY-EQ','price':100,'quote_at':T.isoformat(),'first_trade':95}
+  first=e.fill(self.db,self.signal(symbol='INFY-EQ'),fq,T);self.assertTrue(first['filled']);self.assertEqual(first['qty'],526);self.assertEqual(first['execution_path'],'FALLBACK_OPEN')
+  stop=self.signal('SELL',symbol='HDFCBANK-EQ');stop['stop']=True
+  skipped=e.fill(self.db,stop,{'symbol':'HDFCBANK-EQ','price':85,'quote_at':T.isoformat(),'open':90},T)
+  self.assertFalse(skipped['filled']);self.assertEqual(skipped['execution_path'],'LTP_LEGACY')
+  self.assertEqual(self.db.query('SELECT execution_path FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,stop['id']))[0]['execution_path'],'LTP_LEGACY')
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
  def test_closed_monitor_no_quotes(self):
   e.now=lambda:datetime(2026,11,7,10,tzinfo=e.IST)
   class Feed:

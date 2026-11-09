@@ -117,14 +117,37 @@ class MarketData:
     try:
      stamp=datetime.fromtimestamp(float(tt),IST).isoformat() if str(tt).replace('.','',1).isdigit() else datetime.fromisoformat(str(tt)).astimezone(IST).isoformat()
     except Exception:pass
-    p=v.get('lp')
-    try:p=float(p);p=p if math.isfinite(p) else None
-    except (TypeError,ValueError):p=None
-    out[sym]={'symbol':sym,'price':p,'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES'}
+    out[sym]=quote_from_fyers(x,stamp)
   for sym in symbols:out.setdefault(sym,{'symbol':sym,'price':None,'quote_at':None,'provider_status':'missing','source':'FYERS_QUOTES'})
   return out
  def history(self,symbol,start,end):
   return self.get('history',{'symbol':'NSE:'+symbol,'resolution':'1D','date_format':'1','range_from':str(start),'range_to':str(end) }).get('candles') or []
+def positive_price(raw):
+ try:v=float(raw)
+ except (TypeError,ValueError):return None
+ return v if math.isfinite(v) and v>0 else None
+def quote_from_fyers(x,stamp=None):
+ """Map one Fyers quote. open_price is the session open. indicative_price is an auction only while reference_price is positive; otherwise Fyers repeats the last trade."""
+ v=x.get('v') or {};sym=(x.get('n') or v.get('symbol') or '').replace('NSE:','')
+ if stamp is None:
+  tt=v.get('tt')
+  try:stamp=datetime.fromtimestamp(float(tt),IST).isoformat() if str(tt).replace('.','',1).isdigit() else datetime.fromisoformat(str(tt)).astimezone(IST).isoformat()
+  except Exception:stamp=None
+ official=positive_price(v.get('open_price'));indicative=positive_price(v.get('indicative_price'));cas=positive_price(v.get('reference_price'))
+ row={'symbol':sym,'price':positive_price(v.get('lp')),'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES','open':official}
+ if official is None and indicative is not None and cas is not None:row['auction_price']=indicative
+ return row
+def execution_reference(q,stop=False):
+ """Next-open orders use the official open. A polled stop keeps the observed last trade until Group H."""
+ if not q:return None,'LTP_LEGACY'
+ if stop:return positive_price(q.get('price')),'LTP_LEGACY'
+ official=positive_price(q.get('open'))
+ if official is not None:return official,'FEED_OPEN'
+ auction=positive_price(q.get('auction_price'))
+ if auction is not None:return auction,'AUCTION_CAPTURE'
+ first=positive_price(q.get('first_trade'))
+ if first is not None:return first,'FALLBACK_OPEN'
+ return positive_price(q.get('price')),'LTP_LEGACY'
 def valid_quote(q,t):
  if not is_open(t):return False,'market_closed_or_unverified'
  if q and q.get('provider_status','ok')!='ok':return False,'provider_quote_error'
@@ -140,31 +163,31 @@ def audit_quotes(db,quotes,t):
   ok,why=valid_quote(q,t);rows.append(('INSERT INTO paper_quote_audit(namespace,symbol,observed_at,quote_at,price,accepted,reason) VALUES(?,?,?,?,?,?,?)',(NS,sym,t.isoformat(),q.get('quote_at'),q.get('price'),int(ok),why)))
  db.batch(rows)
 def stable_id(*parts):return hashlib.sha256('|'.join(map(str,parts)).encode()).hexdigest()
-def decide(db,s,t,decision_type,cause,rule,payload=None):
+def decide(db,s,t,decision_type,cause,rule,payload=None,execution_path='LTP_LEGACY'):
  correlation=s.get('id') or stable_id(decision_type,cause,s.get('strategy'),s.get('symbol'),t.isoformat())
- db.call({'action':'decision','namespace':NS,'correlation_id':correlation,'decision_type':decision_type,'strategy':s.get('strategy'),'symbol':s.get('symbol'),'signal_id':s.get('id'),'cause':cause,'rule':rule,'execution_path':'LTP_LEGACY','source_at':t.isoformat(),'payload':{'strategy_version':RULE_HASH.get(str(s.get('strategy'))),**(payload or {})}})
+ db.call({'action':'decision','namespace':NS,'correlation_id':correlation,'decision_type':decision_type,'strategy':s.get('strategy'),'symbol':s.get('symbol'),'signal_id':s.get('id'),'cause':cause,'rule':rule,'execution_path':execution_path,'source_at':t.isoformat(),'payload':{'strategy_version':RULE_HASH.get(str(s.get('strategy'))),**(payload or {})}})
 def _fill(db,s,q,t):
- ok,why=valid_quote(q,t)
+ ok,why=valid_quote(q,t);reference,path=execution_reference(q,stop=bool(s.get('stop')))
  if not ok:
-  decide(db,s,t,'SKIP',why,'quote_not_fillable',{'price':q.get('price') if q else None});return {'filled':False,'reason':why,'execution_path':'LTP_LEGACY'}
+  decide(db,s,t,'SKIP',why,'quote_not_fillable',{'price':q.get('price') if q else None},path);return {'filled':False,'reason':why,'execution_path':path}
  if s['eligible_date']>t.date().isoformat():
-  decide(db,s,t,'HOLD','not_yet_eligible','entry_waits_for_eligible_session',{});return {'filled':False,'reason':'not_yet_eligible','execution_path':'LTP_LEGACY'}
+  decide(db,s,t,'HOLD','not_yet_eligible','entry_waits_for_eligible_session',{},path);return {'filled':False,'reason':'not_yet_eligible','execution_path':path}
  quantity=1
  if s['side']=='BUY' and not s.get('stop'):
   # A delayed pending entry must not turn into an arbitrarily old new entry.
   eligible=date.fromisoformat(s['eligible_date'])
   if eligible<t.date():
-   db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);decide(db,s,t,'SKIP','expired_entry_signal','entry_expires_after_eligible_session',{});return {'filled':False,'reason':'expired_entry_signal','execution_path':'LTP_LEGACY'}
-  try:quantity=cap.integer_shares(q['price'])
+   db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);decide(db,s,t,'SKIP','expired_entry_signal','entry_expires_after_eligible_session',{},path);return {'filled':False,'reason':'expired_entry_signal','execution_path':path}
+  try:quantity=cap.integer_shares(reference)
   except ValueError:
-   decide(db,s,t,'SKIP','nonpositive_price','price_requires_positive_paise',{'price':q.get('price')});return {'filled':False,'reason':'nonpositive_price','quantity':0,'execution_path':'LTP_LEGACY'}
+   decide(db,s,t,'SKIP','nonpositive_price','price_requires_positive_paise',{'price':reference},path);return {'filled':False,'reason':'nonpositive_price','quantity':0,'execution_path':path}
   if quantity<1:
-   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=q['price'],target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
-   decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':q['price'],quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']})
-   return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':'LTP_LEGACY'}
- r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':'LTP_LEGACY','strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
+   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=reference,target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
+   decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':reference,quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']},path)
+   return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':path}
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':reference,'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':path,'strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
  if isinstance(r,dict) and r.get('reason') in ('SLEEVE_SLOT_FULL','ISIN_CAP','INSUFFICIENT_CASH','ADV_FILTER_SKIP','ADV_PARTICIPATION_CAP'):
-  log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause=r['reason'],price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],max_strategies_per_isin=cap.POLICY['max_strategies_per_isin'],quantity=0)
+  log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause=r['reason'],price=reference,open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],max_strategies_per_isin=cap.POLICY['max_strategies_per_isin'],quantity=0)
  if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
  return r
 STRATEGY_SOURCES={2:'02_supertrend/2026-11-07_run/run_strategy2.py',3:'03_rsi_pullback/2026-11-07_run/run_strategy3.py',4:'04_dual_ma/2026-11-07_run/run_strategy4.py',5:'05_bollinger_reversion/2026-11-07_run/run_strategy5.py',6:'06_macd_trend/2026-11-07_run/run_strategy6.py',7:'07_52week_momentum/2026-11-07_run/run_strategy7.py'}
