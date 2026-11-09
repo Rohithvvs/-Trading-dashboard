@@ -15,7 +15,7 @@ Updated: 2026-11-09
 - [x] Task 3 (A8.3 / A1 / A2 / A3 / B2): 3-tier engine, independent track capital, tier-specific warm-start lengths (60d / 100–120d), PIT data, net-of-haircut re-baseline, inherited discordant trade split, indicator back-adjustment, and target windows (45d/75d + single +15d extension -> `inconclusive`) (`adaptive_engine.py`, `tests/test_adaptive_engine.py`)
 - [x] Task 4 (A8.4 / A4 / B3): Trial counting (`K_cand`, `K_eff` linear formula with $\bar{\rho} \le 0.9$) and explicit link to effective critical value in Gate 2 (`trial_counting.py`, `tests/test_trial_counting.py`)
 - [x] Task 5 (A8.5 / A5 / B3): Paired daily active return $d_t$, HAC $t$-stat, residualized $d_t$ check, Gate 4 binding $\alpha$, and block-bootstrap capital-day expectancy (`residualized_check.py`, `tests/test_residualized_check.py`)
-- [ ] Task 6 (A8.6 / A5 / B3 / B5): Atomic Gates 1, 3, 5, 6, 7, 8 (250 seeded placebos including selection process, jittering only discordant trades), 9, incremental superiority vs Track C, and Track C probation
+- [x] Task 6 (A8.6 / A5 / B3 / B5): Atomic Gates 1, 3, 5, 6, 7, 8 (250 seeded placebos including selection process, jittering only discordant trades), 9, incremental superiority vs Track C, and Track C probation (`atomic_gates.py`, `tests/test_atomic_gates.py`)
 - [ ] Task 7 (A8.7 / A6 / A7 / B1 / B4): Calibration harness with go/no-go ~30% power floor, oldest-partition tuning, single-touch holdout vault, meta-kill switch, and CI look-ahead truncation test (price + corporate actions)
 - [ ] Task 8 (A8.8 / A6 / B4): Observation-only mode and promotion lock (requires calibration pass + CI look-ahead pass + observation period)
 - [ ] Task 9 (A8.9 / B6): UI and read API for Tracks A, B, and C status, logs, and controls
