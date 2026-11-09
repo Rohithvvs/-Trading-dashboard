@@ -13,9 +13,9 @@ The engine is not installed on the bot box.
 
 ## Task Group A — schema and logging
 
-- [ ] `execution_path` on every fill (`LTP_LEGACY` until Group D)
-- [ ] `paper_decisions` append-only hash chain and `correlation_id`
-- [ ] One sample decision reconstructs from the table alone
+- [x] `execution_path` on every fill (`LTP_LEGACY` until Group D)
+- [x] `paper_decisions` append-only hash chain and `correlation_id`
+- [x] One sample decision reconstructs from the table alone
 
 ## Task Group B — capital and sizing
 

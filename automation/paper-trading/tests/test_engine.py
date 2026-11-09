@@ -62,6 +62,20 @@ class PaperTests(unittest.TestCase):
   self.assertTrue(self.db.query('SELECT * FROM paper_positions WHERE namespace=? AND strategy=1 AND symbol=? AND qty>0',(e.NS,winner)))
   self.assertEqual(self.db.query('SELECT status FROM paper_signals WHERE namespace=? AND id=?',(e.NS,other['id']))[0]['status'],'pending')
   self.assertEqual(len([p for p in self.db.positions() if p['strategy']==1]),9)
+ def test_fill_is_ltp_legacy_and_decision_chain_detects_tamper(self):
+  s=self.signal();r=e.fill(self.db,s,self.quote(),T);self.assertTrue(r['filled']);self.assertEqual(r['execution_path'],'LTP_LEGACY');self.assertEqual(r['correlation_id'],s['id'])
+  self.assertEqual(self.db.query('SELECT execution_path FROM paper_fills WHERE namespace=?',(e.NS,))[0]['execution_path'],'LTP_LEGACY')
+  decision=self.db.query('SELECT * FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]
+  self.assertEqual(decision['decision_type'],'ENTRY');self.assertEqual(decision['cause'],'filled');self.assertEqual(decision['execution_path'],'LTP_LEGACY')
+  payload=json.loads(decision['payload_json']);self.assertEqual(payload['quantity'],500);self.assertEqual(payload['price'],100);self.assertEqual(payload['open_positions_before'],0);self.assertIn('strategy_version',payload)
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+  self.db.batch([('UPDATE paper_decisions SET cause=? WHERE namespace=? AND seq=?',('tampered',e.NS,decision['seq']))])
+  self.assertFalse(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
+ def test_unaffordable_skip_is_on_the_decision_chain(self):
+  s=self.signal(strategy=2);r=e.fill(self.db,s,self.quote(60000),T);self.assertEqual(r['reason'],'UNAFFORDABLE_ZERO_SHARES')
+  decision=self.db.query('SELECT decision_type,cause,execution_path FROM paper_decisions WHERE namespace=? AND correlation_id=?',(e.NS,s['id']))[0]
+  self.assertEqual(decision['decision_type'],'SKIP');self.assertEqual(decision['cause'],'UNAFFORDABLE_ZERO_SHARES');self.assertEqual(decision['execution_path'],'LTP_LEGACY')
+  self.assertTrue(self.db.call({'action':'verify_decisions','namespace':e.NS})['ok'])
  def test_reject_missing_timestamp(self):self.assertFalse(e.fill(self.db,self.signal(),{'price':100},T)['filled'])
  def test_closed_market(self):
   saturday=datetime(2026,11,7,10,tzinfo=e.IST);self.assertFalse(e.fill(self.db,self.signal(),self.quote(),saturday)['filled'])

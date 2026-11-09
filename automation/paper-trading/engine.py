@@ -16,6 +16,7 @@ import history_repair as hr
 import capital as cap
 ROOT=Path(__file__).resolve().parent; LEGACY=Path('/workspace/sahil-fyers-turso'); IST=ZoneInfo('Asia/Kolkata'); CFG=json.loads((ROOT/'config.json').read_text()); PY=sys.executable
 RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']:r['ISIN Code'] for r in csv.DictReader((ROOT/'universe.csv').open())}
+RULE_HASH={str(k):hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in RULES.items() if str(k).isdigit()}
 for folder in ['logs','out','tests']:(ROOT/folder).mkdir(exist_ok=True)
 if CFG.get('paper_only') is not True:raise SystemExit('PAPER_ONLY_MODE_REQUIRED')
 cap.assert_freeze()
@@ -139,22 +140,29 @@ def audit_quotes(db,quotes,t):
   ok,why=valid_quote(q,t);rows.append(('INSERT INTO paper_quote_audit(namespace,symbol,observed_at,quote_at,price,accepted,reason) VALUES(?,?,?,?,?,?,?)',(NS,sym,t.isoformat(),q.get('quote_at'),q.get('price'),int(ok),why)))
  db.batch(rows)
 def stable_id(*parts):return hashlib.sha256('|'.join(map(str,parts)).encode()).hexdigest()
+def decide(db,s,t,decision_type,cause,rule,payload=None):
+ correlation=s.get('id') or stable_id(decision_type,cause,s.get('strategy'),s.get('symbol'),t.isoformat())
+ db.call({'action':'decision','namespace':NS,'correlation_id':correlation,'decision_type':decision_type,'strategy':s.get('strategy'),'symbol':s.get('symbol'),'signal_id':s.get('id'),'cause':cause,'rule':rule,'execution_path':'LTP_LEGACY','source_at':t.isoformat(),'payload':{'strategy_version':RULE_HASH.get(str(s.get('strategy'))),**(payload or {})}})
 def _fill(db,s,q,t):
  ok,why=valid_quote(q,t)
- if not ok:return {'filled':False,'reason':why}
- if s['eligible_date']>t.date().isoformat():return {'filled':False,'reason':'not_yet_eligible'}
+ if not ok:
+  decide(db,s,t,'SKIP',why,'quote_not_fillable',{'price':q.get('price') if q else None});return {'filled':False,'reason':why,'execution_path':'LTP_LEGACY'}
+ if s['eligible_date']>t.date().isoformat():
+  decide(db,s,t,'HOLD','not_yet_eligible','entry_waits_for_eligible_session',{});return {'filled':False,'reason':'not_yet_eligible','execution_path':'LTP_LEGACY'}
  quantity=1
  if s['side']=='BUY' and not s.get('stop'):
   # A delayed pending entry must not turn into an arbitrarily old new entry.
   eligible=date.fromisoformat(s['eligible_date'])
   if eligible<t.date():
-   db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);return {'filled':False,'reason':'expired_entry_signal'}
+   db.batch([("UPDATE paper_signals SET status='expired' WHERE namespace=? AND id=?",(NS,s['id']))]);decide(db,s,t,'SKIP','expired_entry_signal','entry_expires_after_eligible_session',{});return {'filled':False,'reason':'expired_entry_signal','execution_path':'LTP_LEGACY'}
   try:quantity=cap.integer_shares(q['price'])
-  except ValueError:return {'filled':False,'reason':'nonpositive_price','quantity':0}
+  except ValueError:
+   decide(db,s,t,'SKIP','nonpositive_price','price_requires_positive_paise',{'price':q.get('price')});return {'filled':False,'reason':'nonpositive_price','quantity':0,'execution_path':'LTP_LEGACY'}
   if quantity<1:
    log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='UNAFFORDABLE_ZERO_SHARES',price=q['price'],target_notional_inr=cap.POLICY['target_notional_inr'],quantity=0)
-   return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0}
- r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id()});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
+   decide(db,s,t,'SKIP','UNAFFORDABLE_ZERO_SHARES','floor_notional_over_fill_price_is_zero',{'price':q['price'],quantity:0,'target_notional_inr':cap.POLICY['target_notional_inr']})
+   return {'filled':False,'reason':'UNAFFORDABLE_ZERO_SHARES','quantity':0,'execution_path':'LTP_LEGACY'}
+ r=db.call({'action':'fill','namespace':NS,'signal':s,'quantity':quantity,'price':q['price'],'isin':ISINS.get(s['symbol']),'quote_at':q['quote_at'],'at':t.isoformat(),'audit_run_id':al.run_id(),'execution_path':'LTP_LEGACY','strategy_version':RULE_HASH.get(str(s['strategy']))});log('paper_fill_attempt',strategy=s['strategy'],symbol=s['symbol'],result=r)
  if isinstance(r,dict) and r.get('reason')=='SLEEVE_SLOT_FULL':
   log('order_skipped',strategy=s['strategy'],symbol=s['symbol'],signal_id=s['id'],cause='SLEEVE_SLOT_FULL',price=q['price'],open_positions=r.get('open_positions'),max_positions_per_sleeve=cap.POLICY['max_positions_per_sleeve'],quantity=0)
  if isinstance(r,dict) and 'qty' in r:r['quantity']=r['qty']
@@ -165,7 +173,11 @@ def fill(db,s,q,t):
  with al.scope(e,db,'paper_order'):
   al.emit(e,db,'paper_order_attempt',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),bar_date=s.get('bar_date'),side=s.get('side'),price=q.get('price') if q else None,quote_at=q.get('quote_at') if q else None)
   r=_fill(db,s,q,t+max(now()-began,timedelta(0)))
-  al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))),quantity=r.get('quantity'),**({} if r.get('open_positions') is None else {'open_positions':r['open_positions']}))
+  extra={}
+  if r.get('open_positions') is not None:extra['open_positions']=r['open_positions']
+  if r.get('execution_path'):extra['execution_path']=r['execution_path']
+  if r.get('correlation_id'):extra['correlation_id']=r['correlation_id']
+  al.emit(e,db,'paper_order_result',outcome='filled' if r.get('filled') else 'blocked',strategy=s.get('strategy'),symbol=s.get('symbol'),signal_id=s.get('id'),reason=r.get('reason','ok'),fills=int(bool(r.get('filled'))),quantity=r.get('quantity'),**extra)
   return r
 
 def indicator(strategy,g):
@@ -373,7 +385,11 @@ def init(db):
  si.init(db)
  pf.init(sys.modules[__name__],db)
  db.batch([(hr.SCHEMA,())])
- stm=[(sql.strip(),()) for sql in (ROOT/'schema.sql').read_text().split(';') if sql.strip()];db.batch(stm);db.batch([('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'mode','PAPER_ONLY')),('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'automation_schema_version','2'))]);db.call({'action':'register_policy'});return {'schema':'ready','namespace':NS,'paper_only':True}
+ stm=[(sql.strip(),()) for sql in (ROOT/'schema.sql').read_text().split(';') if sql.strip()];db.batch(stm);migrate(db);db.batch([('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'mode','PAPER_ONLY')),('INSERT OR IGNORE INTO paper_meta(namespace,key,value) VALUES(?,?,?)',(NS,'automation_schema_version','2'))]);db.call({'action':'register_policy'});return {'schema':'ready','namespace':NS,'paper_only':True}
+def migrate(db):
+ cols=db.query('PRAGMA table_info(paper_fills)')
+ if cols and not any(c.get('name')=='execution_path' for c in cols):
+  db.batch([("ALTER TABLE paper_fills ADD COLUMN execution_path TEXT NOT NULL DEFAULT 'LTP_LEGACY'",())])
 def main():
  parser=argparse.ArgumentParser(description='Paper-only Fyers-data/Turso-ledger engine; never broker orders.')
  parser.add_argument('command',choices=['init','probe','bootstrap','scan','monitor-once','positions','trades-today','pnl','status','worker','ensure-monitor','health','screen-only','finance','charges','overlap','eod','weekly','repair-history','ensure-session','guardian','replay-audit','export-logs']);parser.add_argument('--sync',action='store_true');parser.add_argument('--max-history-requests',type=int,default=20);parser.add_argument('--max-history-seconds',type=int,default=240);parser.add_argument('--session',default=None);parser.add_argument('--format',choices=['jsonl','csv'],default='jsonl');parser.add_argument('--max-events',type=int,default=200000);parser.add_argument('--max-files',type=int,default=20);args=parser.parse_args()
