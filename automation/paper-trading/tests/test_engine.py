@@ -336,10 +336,10 @@ class PaperTests(unittest.TestCase):
    self.assertEqual(count[0],1);self.assertEqual(req.call_count,2)
  def test_quote_batch_size(self):
   api=e.MarketData.__new__(e.MarketData);calls=[]
-  def get(route,params):calls.append(params['symbols'].split(','));return {'d':[]}
-  api.get=get;api.quotes(['X'+str(i)+'-EQ' for i in range(101)]);self.assertEqual([len(x) for x in calls],[50,50,1])
+  def get(route,params):calls.append((route,params['symbol'].split(',')));return {'s':'ok','d':{}}
+  api.get=get;q=api.quotes(['X'+str(i)+'-EQ' for i in range(101)]);self.assertEqual(len(calls),101);self.assertTrue(all(r=='depth' and len(x)==1 for r,x in calls));self.assertTrue(all(v['quote_at'] is None for v in q.values()))
  def test_real_order_routes_absent(self):
-  self.assertEqual(set(e.AUTH_ROUTES),{'quotes','history'});self.assertTrue(e.CFG['paper_only']);self.assertEqual(e.cap.POLICY['target_notional_inr'],50000)
+  self.assertEqual(set(e.AUTH_ROUTES),{'quotes','history','depth'});self.assertTrue(all('/data/' in u for u in e.AUTH_ROUTES.values()));self.assertTrue(e.CFG['paper_only']);self.assertEqual(e.cap.POLICY['target_notional_inr'],50000)
  def test_corporate_actions_scale_state_credit_cash_and_leave_rights(self):
   import corporate_actions as ca
   self.assertEqual(ca.scale_paise(10000,3,2),6667);self.assertEqual(ca.scale_paise(20000,2,1),10000)
