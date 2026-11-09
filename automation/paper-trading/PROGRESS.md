@@ -68,7 +68,7 @@ The engine is not installed on the bot box.
 ## Support agent
 
 - [x] A1 schema (`support_findings`, immutable status events via `status_seq`, stable `finding_id`, `support_checkpoints`)
-- [ ] A2 consumer
+- [x] A2 consumer (keyset checkpoint consumer over `paper_events` and `paper_decisions` grouped by `correlation_id`)
 - [ ] A3 detectors
 - [ ] A4 reporter
 - [ ] A5 schedule

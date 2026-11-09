@@ -120,3 +120,75 @@ def current_findings(db, namespace, session_day=None):
         latest['details'] = json.loads(latest['details_json'])
         out.append(latest)
     return out
+
+
+def get_checkpoint(db, namespace):
+    rows = db.query('SELECT * FROM support_checkpoints WHERE namespace=?', (namespace,))
+    if not rows:
+        return {'namespace': namespace, 'last_recorded_at': '', 'last_event_id': '', 'last_decision_seq': 0}
+    r = rows[0]
+    return {
+        'namespace': namespace,
+        'last_recorded_at': str(r['last_recorded_at']),
+        'last_event_id': str(r['last_event_id']),
+        'last_decision_seq': int(r['last_decision_seq']),
+    }
+
+
+def event_correlation_id(event_row):
+    try:
+        payload = json.loads(event_row.get('data_json') or '{}')
+    except Exception:
+        payload = {}
+    return str(payload.get('correlation_id') or event_row.get('signal_id') or event_row.get('run_id') or event_row.get('event_id'))
+
+
+def consume_checkpoint(db, namespace, batch_limit=500, recorded_at=None):
+    """Consume new paper_events and paper_decisions after the stored checkpoint (read-only on trading tables)."""
+    cp = get_checkpoint(db, namespace)
+    events = db.query(
+        'SELECT * FROM paper_events WHERE namespace=? AND (recorded_at>? OR (recorded_at=? AND event_id>?)) ORDER BY recorded_at,event_id LIMIT ?',
+        (namespace, cp['last_recorded_at'], cp['last_recorded_at'], cp['last_event_id'], int(batch_limit)),
+    )
+    try:
+        decisions = db.query(
+            'SELECT * FROM paper_decisions WHERE namespace=? AND seq>? ORDER BY seq LIMIT ?',
+            (namespace, cp['last_decision_seq'], int(batch_limit)),
+        )
+    except Exception:
+        decisions = []
+    next_rec = cp['last_recorded_at']
+    next_eid = cp['last_event_id']
+    if events:
+        next_rec = str(events[-1]['recorded_at'])
+        next_eid = str(events[-1]['event_id'])
+    next_seq = int(decisions[-1]['seq']) if decisions else cp['last_decision_seq']
+    stamp = recorded_at or _utc_now()
+    if events or decisions:
+        db.batch([(
+            'INSERT INTO support_checkpoints(namespace,last_recorded_at,last_event_id,last_decision_seq,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(namespace) DO UPDATE SET last_recorded_at=excluded.last_recorded_at,last_event_id=excluded.last_event_id,last_decision_seq=excluded.last_decision_seq,updated_at=excluded.updated_at',
+            (namespace, next_rec, next_eid, next_seq, stamp),
+        )])
+    by_correlation = {}
+    for ev in events:
+        cid = event_correlation_id(ev)
+        slot = by_correlation.setdefault(cid, {'events': [], 'decisions': []})
+        slot['events'].append(ev)
+    for dec in decisions:
+        cid = str(dec['correlation_id'])
+        slot = by_correlation.setdefault(cid, {'events': [], 'decisions': []})
+        slot['decisions'].append(dec)
+    return {
+        'namespace': namespace,
+        'events_consumed': len(events),
+        'decisions_consumed': len(decisions),
+        'events': events,
+        'decisions': decisions,
+        'by_correlation': by_correlation,
+        'checkpoint': {
+            'last_recorded_at': next_rec,
+            'last_event_id': next_eid,
+            'last_decision_seq': next_seq,
+        },
+    }
+
