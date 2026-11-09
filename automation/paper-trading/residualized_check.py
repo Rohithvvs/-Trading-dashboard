@@ -47,7 +47,12 @@ def newey_west_t_hac(series, max_lag=None):
     if lrv <= 0.0:
         lrv = float(np.var(x, ddof=1))
     se_hac = math.sqrt(max(lrv, 0.0) / n)
-    t_hac = (mean / se_hac) if se_hac > 1e-15 else 0.0
+    if se_hac > 1e-15:
+        t_hac = mean / se_hac
+    elif abs(mean) > 1e-15:
+        t_hac = math.copysign(1e6, mean)
+    else:
+        t_hac = 0.0
     return {
         'mean': mean,
         'se_hac': se_hac,
