@@ -18,7 +18,7 @@ RULES=json.loads((ROOT/'strategy_rules.json').read_text());ISINS={r['db_symbol']
 for folder in ['logs','out','tests']:(ROOT/folder).mkdir(exist_ok=True)
 if CFG.get('paper_only') is not True:raise SystemExit('PAPER_ONLY_MODE_REQUIRED')
 if not isinstance(CFG['quantity'],int) or CFG['quantity']!=1:raise SystemExit('POSITIVE_INTEGER_QUANTITY_REQUIRED')
-NS=CFG['namespace']; AUTH_ROUTES={'quotes':'https://api-t1.fyers.in/data/quotes','history':'https://api-t1.fyers.in/data/history'}
+NS=CFG['namespace']; AUTH_ROUTES={'quotes':'https://api-t1.fyers.in/data/quotes','history':'https://api-t1.fyers.in/data/history','depth':'https://api-t1.fyers.in/data/depth'}
 def now():return datetime.now(IST)
 def js(v):return json.dumps(v,default=str,allow_nan=False)
 def log(kind,**data):
@@ -63,6 +63,21 @@ def completed_day(t):
 def load_env():
  sys.path.insert(0,str(LEGACY));from fyers_auth import load_env as f
  return f(LEGACY/'.env')
+def last_trade_stamp(ltt):
+ """Exchange last-traded epoch seconds -> IST ISO string; None (fail closed) when missing/invalid."""
+ if isinstance(ltt,bool) or ltt is None:return None
+ try:v=float(ltt)
+ except (TypeError,ValueError):return None
+ if not math.isfinite(v) or v<=946684800 or v>=4102444800:return None
+ return datetime.fromtimestamp(v,IST).isoformat()
+
+def depth_quote(sym,d):
+ x=(d.get('d') or {}).get('NSE:'+sym) or {}
+ p=x.get('ltp')
+ try:p=float(p);p=p if math.isfinite(p) else None
+ except (TypeError,ValueError):p=None
+ return {'symbol':sym,'price':p,'quote_at':last_trade_stamp(x.get('ltt')),'provider_status':'ok' if x else 'missing','source':'FYERS_DEPTH_LTT'}
+
 class MarketData:
  def __init__(self):self.env=load_env();self.refreshed=False;self.last=0
  def refresh(self):
@@ -103,23 +118,21 @@ class MarketData:
    return d
   raise RuntimeError('market_data_request_failed')
  def quotes(self,symbols):
-  out={}
-  for i in range(0,len(symbols),50):
-   batch_at=now();clock=time.monotonic();batch_id=al.run_id()+':'+str(i//50);al.note('quote_batch_request',batch_id=batch_id,symbols=symbols[i:i+50],request_started_at=batch_at,symbols_count=len(symbols[i:i+50]))
-   try:d=self.get('quotes',{'symbols':','.join('NSE:'+s for s in symbols[i:i+50])})
+  # Fyers /data/quotes `tt` is the session date (midnight), not a trade time. Freshness uses the
+  # exchange last-traded time `ltt` from read-only /data/depth, which accepts one symbol per request;
+  # MarketData.get paces every request (>=1.3s) and handles auth refresh/429 backoff.
+  out={};batch_at=now();clock=time.monotonic();batch_id=al.run_id()+':depth';al.note('quote_batch_request',batch_id=batch_id,symbols=list(symbols),request_started_at=batch_at,symbols_count=len(symbols),source='FYERS_DEPTH_LTT')
+  for sym in symbols:
+   try:d=self.get('depth',{'symbol':'NSE:'+sym,'ohlcv_flag':'1'})
+   except RuntimeError as ex:
+    if str(ex).startswith('market_data_error_'):
+     al.note('quote_symbol_failed',outcome='failed',severity='WARN',symbol=sym,error_code=str(ex));out[sym]={'symbol':sym,'price':None,'quote_at':None,'provider_status':'error','source':'FYERS_DEPTH_LTT'};continue
+    al.note('quote_batch_failed',outcome='failed',severity='ERROR',error_code=type(ex).__name__,duration_ms=round((time.monotonic()-clock)*1000));raise
    except Exception as ex:
     al.note('quote_batch_failed',outcome='failed',severity='ERROR',error_code=type(ex).__name__,duration_ms=round((time.monotonic()-clock)*1000));raise
-   al.note('quote_batch_response',batch_id=batch_id,request_started_at=batch_at,response_received_at=now(),duration_ms=round((time.monotonic()-clock)*1000),symbols_count=len(symbols[i:i+50]))
-   for x in d.get('d',[]):
-    v=x.get('v') or {};sym=(x.get('n') or v.get('symbol') or '').replace('NSE:','');tt=v.get('tt'); stamp=None
-    try:
-     stamp=datetime.fromtimestamp(float(tt),IST).isoformat() if str(tt).replace('.','',1).isdigit() else datetime.fromisoformat(str(tt)).astimezone(IST).isoformat()
-    except Exception:pass
-    p=v.get('lp')
-    try:p=float(p);p=p if math.isfinite(p) else None
-    except (TypeError,ValueError):p=None
-    out[sym]={'symbol':sym,'price':p,'quote_at':stamp,'provider_status':x.get('s'),'source':'FYERS_QUOTES'}
-  for sym in symbols:out.setdefault(sym,{'symbol':sym,'price':None,'quote_at':None,'provider_status':'missing','source':'FYERS_QUOTES'})
+   out[sym]=depth_quote(sym,d)
+  al.note('quote_batch_response',batch_id=batch_id,request_started_at=batch_at,response_received_at=now(),duration_ms=round((time.monotonic()-clock)*1000),symbols_count=len(symbols))
+  for sym in symbols:out.setdefault(sym,{'symbol':sym,'price':None,'quote_at':None,'provider_status':'missing','source':'FYERS_DEPTH_LTT'})
   return out
  def history(self,symbol,start,end):
   return self.get('history',{'symbol':'NSE:'+symbol,'resolution':'1D','date_format':'1','range_from':str(start),'range_to':str(end) }).get('candles') or []
